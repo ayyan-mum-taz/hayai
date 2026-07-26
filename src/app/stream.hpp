@@ -58,6 +58,7 @@ private:
 
 	std::atomic<bool> session_quit_{ false };
 	std::atomic<bool> failed_{ false };
+	std::atomic<bool> login_pin_needed_{ false };
 	bool video_up_ = false;
 };
 

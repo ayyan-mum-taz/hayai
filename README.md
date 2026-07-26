@@ -88,6 +88,15 @@ first on-device session works through the verify list in
 above, including the honest limits (the display compositor's vblank latch is a
 floor no userland client can beat).
 
+## Installing
+
+Grab `hayai.nro` from [Releases](../../releases), drop it into `/switch/` on
+your SD card, and launch it from hbmenu. No other files are needed — shaders
+and assets are embedded.
+
+A black screen for a few seconds after selecting a console is normal: that's
+the session connecting, and video appears on the first decoded frame.
+
 ## Building
 
 The only host requirement is Docker; the toolchain is a pinned container.

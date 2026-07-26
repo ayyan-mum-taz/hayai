@@ -72,10 +72,22 @@ private:
 	bool up_ = false;
 };
 
-struct VsyncCtx
+// Numeric prompt via the software keyboard; usable mid-stream (the library
+// applet overlays whatever owns the display).
+bool prompt_login_pin(char *out, size_t out_size)
 {
-	std::atomic<bool> *stop;
-};
+	SwkbdConfig kbd;
+	if(R_FAILED(swkbdCreate(&kbd, 0)))
+		return false;
+	swkbdConfigMakePresetDefault(&kbd);
+	swkbdConfigSetGuideText(&kbd, "PS5 Remote Play login PIN");
+	swkbdConfigSetType(&kbd, SwkbdType_NumPad);
+	swkbdConfigSetStringLenMax(&kbd, static_cast<u32>(out_size - 1));
+	out[0] = '\0';
+	const Result rc = swkbdShow(&kbd, out, out_size);
+	swkbdClose(&kbd);
+	return R_SUCCEEDED(rc) && out[0] != '\0';
+}
 
 // Watches the display vsync event to timestamp vblanks -- the reference for
 // beat-phase telemetry -- and hosts the periodic summary logging, keeping both
@@ -129,6 +141,10 @@ void Stream::event_cb(ChiakiEvent *event, void *user)
 			break;
 		case CHIAKI_EVENT_RUMBLE:
 			self->input_.set_rumble(event->rumble.left, event->rumble.right);
+			break;
+		case CHIAKI_EVENT_LOGIN_PIN_REQUEST:
+			HAYAI_LOGI("session: console requests login PIN");
+			self->login_pin_needed_.store(true, std::memory_order_relaxed);
 			break;
 		case CHIAKI_EVENT_QUIT:
 			HAYAI_LOGI("session: quit (%s)", chiaki_quit_reason_string(event->quit.reason));
@@ -272,7 +288,8 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 	}
 
 	err = chiaki_session_start(&session_);
-	if(err != CHIAKI_ERR_SUCCESS)
+	const bool started = err == CHIAKI_ERR_SUCCESS;
+	if(!started)
 	{
 		HAYAI_LOGE("stream: session start failed: %s", chiaki_error_string(err));
 		session_quit_.store(true, std::memory_order_relaxed);
@@ -282,6 +299,19 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 	// Everything runs on its own threads; this one just waits for an exit.
 	while(!session_quit_.load(std::memory_order_relaxed))
 	{
+		if(login_pin_needed_.exchange(false, std::memory_order_relaxed))
+		{
+			char pin[12];
+			if(prompt_login_pin(pin, sizeof(pin)))
+				chiaki_session_set_login_pin(&session_,
+					reinterpret_cast<const uint8_t *>(pin), strlen(pin));
+			else
+			{
+				HAYAI_LOGW("stream: login PIN canceled, stopping");
+				chiaki_session_stop(&session_);
+				break;
+			}
+		}
 		if(input_.quit_requested())
 		{
 			HAYAI_LOGI("stream: quit chord");
@@ -296,12 +326,15 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 		svcSleepThread(10'000'000ULL);	// 10 ms
 	}
 
-	chiaki_session_join(&session_);
-	chiaki_session_fini(&session_);
-
-	// Session threads are dead: no more callbacks. Tear down in reverse.
+	// Order matters here. Join first so no session thread can fire another
+	// callback; then stop our threads that poke the session (input calls
+	// chiaki_session_set_controller_state); only then fini, which destroys
+	// the mutexes those calls take.
+	if(started)
+		chiaki_session_join(&session_);
 	input_.stop();
 	audio_.stop();
+	chiaki_session_fini(&session_);
 
 	vsync_stop_.store(true, std::memory_order_relaxed);
 	vsync_watcher_.join();

@@ -214,8 +214,10 @@ void Pipeline::thread_loop()
 		u32 released_count = 0;
 		if(R_SUCCEEDED(audoutWaitPlayFinish(&released, &released_count, 5'000'000ULL)) && released)
 		{
-			// audout returns a chain; walk it.
-			for(AudioOutBuffer *b = released; b; )
+			// audout returns a chain; walk it, capped at our own buffer count
+			// in case the service leaves a dangling next pointer.
+			unsigned walked = 0;
+			for(AudioOutBuffer *b = released; b && walked < kOutBuffers; walked++)
 			{
 				AudioOutBuffer *next = b->next;
 				const unsigned need = kOutSamples;
