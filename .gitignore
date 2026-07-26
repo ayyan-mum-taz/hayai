@@ -1,0 +1,6 @@
+build/
+build_*/
+*.nro
+*.nacp
+*.elf
+.DS_Store
