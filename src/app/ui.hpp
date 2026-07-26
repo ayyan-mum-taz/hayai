@@ -2,16 +2,19 @@
 #pragma once
 
 #include "app/config.hpp"
+#include "app/discovery.hpp"
 
 namespace hayai::app {
 
-// Text-mode frontend.
+// Text-mode frontend, structured like the classic Remote Play clients:
+// discovery runs continuously, and the main menu is a live list of consoles --
+// registered ones show their ready/standby state, unregistered ones found on
+// the network can be registered on the spot, standby consoles are woken
+// automatically on connect.
 //
-// Deliberately libnx console, not a UI toolkit: the menus exist to get a
-// session started and get out of the way. The console owns the default
-// framebuffer only while menus are visible; it is torn down before the stream
-// brings up deko3d and re-created afterwards, so nothing UI-related exists
-// while streaming.
+// Deliberately libnx console, not a UI toolkit: the console owns the default
+// framebuffer only while menus are visible; it is torn down before a stream
+// brings up deko3d, so nothing UI-related exists while streaming.
 class Ui
 {
 public:
@@ -28,13 +31,16 @@ private:
 	};
 
 	MenuResult main_menu();
-	void discover_menu();
 	void register_menu();
 	void register_host(HostEntry &entry);
+	// Sends wakeup and waits for the console to report READY. Returns false
+	// if the user canceled or the console never woke.
+	bool wake_and_wait(const HostEntry &entry);
 	void settings_menu();
 	void wait_any_button(const char *prompt);
 
 	Config &config_;
+	Discovery discovery_;
 	HostEntry selected_{};
 };
 

@@ -4,6 +4,8 @@
 
 #include <switch.h>
 
+#include <sys/stat.h>
+
 #include <cstdio>
 #include <cstring>
 
@@ -47,6 +49,13 @@ void RingLog::drain_entry(void *arg)
 
 void RingLog::drain_loop()
 {
+	// File sink first: it works regardless of who owns stdout, and it survives
+	// crashes, which makes it the post-mortem channel for SD-card users.
+	mkdir("/config", 0755);
+	mkdir("/config/hayai", 0755);
+	FILE *f = fopen("/config/hayai/hayai.log", "w");
+	file_ = f;
+
 	while(true)
 	{
 		bool drained_any = false;
@@ -54,7 +63,13 @@ void RingLog::drain_loop()
 		uint32_t state = slot.ready.load(std::memory_order_acquire);
 		if(state == 1)
 		{
-			printf("[%c] %s\n", chiaki_log_level_char(slot.level), slot.text);
+			if(f)
+				fprintf(f, "[%c] %s\n", chiaki_log_level_char(slot.level), slot.text);
+			// stdout only while the console does not own it (i.e. during
+			// streaming, where stdout is nxlink or a null device). Writing to
+			// the console from two threads corrupts its state.
+			if(!console_active_.load(std::memory_order_relaxed))
+				printf("[%c] %s\n", chiaki_log_level_char(slot.level), slot.text);
 			slot.ready.store(0, std::memory_order_release);
 			tail_++;
 			drained_any = true;
@@ -66,11 +81,20 @@ void RingLog::drain_loop()
 
 		if(!drained_any)
 		{
-			fflush(stdout);
+			if(f)
+				fflush(f);
+			if(!console_active_.load(std::memory_order_relaxed))
+				fflush(stdout);
 			if(stop_.load(std::memory_order_relaxed))
 				break;
 			svcSleepThread(20'000'000ULL);	// 20 ms; logs are not latency-critical
 		}
+	}
+	if(f)
+	{
+		fflush(f);
+		fclose(f);
+		file_ = nullptr;
 	}
 	fflush(stdout);
 }

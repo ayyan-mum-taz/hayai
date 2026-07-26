@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
 #include "app/ui.hpp"
-#include "app/discovery.hpp"
 #include "app/stream.hpp"
 #include "core/log.hpp"
 
@@ -22,6 +21,7 @@ PadState g_pad;
 
 void console_begin()
 {
+	core::log().set_console_active(true);
 	consoleInit(nullptr);
 	padConfigureInput(1, HidNpadStyleSet_NpadStandard);
 	padInitializeDefault(&g_pad);
@@ -30,6 +30,7 @@ void console_begin()
 void console_end()
 {
 	consoleExit(nullptr);
+	core::log().set_console_active(false);
 }
 
 uint64_t poll_buttons()
@@ -76,6 +77,22 @@ void regist_cb(ChiakiRegistEvent *event, void *user)
 		wait->done.store(-1, std::memory_order_release);
 }
 
+// One row of the live console list.
+struct MenuEntry
+{
+	enum class Kind
+	{
+		Registered,	// config host, streamable
+		Discovered,	// on the network but not registered yet
+		RegisterIp,
+		Settings,
+	};
+	Kind kind;
+	std::string label;
+	std::string addr;	// for Registered/Discovered
+	bool standby = false;
+};
+
 } // namespace
 
 void Ui::wait_any_button(const char *prompt)
@@ -94,121 +111,163 @@ void Ui::wait_any_button(const char *prompt)
 Ui::MenuResult Ui::main_menu()
 {
 	int cursor = 0;
+
 	while(appletMainLoop())
 	{
-		const int host_count = static_cast<int>(config_.hosts.size());
-		const int item_count = host_count + 3;	// hosts + discover/register + settings
+		// Rebuild the merged list every frame from config + live discovery,
+		// the way the classic clients do it.
+		auto discovered = discovery_.hosts();
+		std::vector<MenuEntry> entries;
+
+		for(const auto &h : config_.hosts)
+		{
+			MenuEntry e;
+			e.kind = MenuEntry::Kind::Registered;
+			e.addr = h.addr;
+			const DiscoveredHost *live = nullptr;
+			for(const auto &d : discovered)
+			{
+				if(d.addr == h.addr)
+				{
+					live = &d;
+					break;
+				}
+			}
+			const char *state = live ? (live->ready ? "ready" : "standby") : "not found";
+			e.standby = live && !live->ready;
+			e.label = h.nickname + "  " + h.addr + "  [" + state + "]";
+			entries.push_back(std::move(e));
+		}
+		for(const auto &d : discovered)
+		{
+			if(config_.find_host(d.addr))
+				continue;
+			MenuEntry e;
+			e.kind = MenuEntry::Kind::Discovered;
+			e.addr = d.addr;
+			e.standby = !d.ready;
+			e.label = d.name + "  " + d.addr + "  [" + (d.ready ? "ready" : "standby") +
+				(d.ps5 ? ", unregistered]" : ", not a PS5]");
+			entries.push_back(std::move(e));
+		}
+		{
+			MenuEntry e;
+			e.kind = MenuEntry::Kind::RegisterIp;
+			e.label = "Register by IP...";
+			entries.push_back(std::move(e));
+			e.kind = MenuEntry::Kind::Settings;
+			e.label = "Settings";
+			entries.push_back(std::move(e));
+		}
+
+		const int count = static_cast<int>(entries.size());
+		if(cursor >= count)
+			cursor = count - 1;
 
 		consoleClear();
-		printf("hayai 0.1.0-dev - latency-first PS5 remote play\n");
+		printf("hayai 0.1.1 - latency-first PS5 remote play\n");
 		if(appletGetAppletType() != AppletType_Application &&
 			appletGetAppletType() != AppletType_SystemApplication)
-			printf("!! applet mode: less memory, worse scheduling. Launch via title takeover.\n");
-		printf("\n");
+			printf("!! applet mode: less memory, worse scheduling. Launch by holding R over a game.\n");
+		printf("\nConsoles (searching continuously...):\n\n");
 
-		for(int i = 0; i < host_count; i++)
+		for(int i = 0; i < count; i++)
 		{
-			const HostEntry &h = config_.hosts[i];
-			printf(" %c Stream %s (%s)%s\n", cursor == i ? '>' : ' ',
-				h.nickname.c_str(), h.addr.c_str(), h.registered ? "" : " [unregistered]");
+			const MenuEntry &e = entries[i];
+			if(i > 0 && e.kind == MenuEntry::Kind::RegisterIp &&
+				entries[i - 1].kind != MenuEntry::Kind::RegisterIp)
+				printf("\n");
+			printf(" %c %s\n", cursor == i ? '>' : ' ', e.label.c_str());
 		}
-		printf(" %c Discover & register consoles\n", cursor == host_count ? '>' : ' ');
-		printf(" %c Register by IP\n", cursor == host_count + 1 ? '>' : ' ');
-		printf(" %c Settings\n", cursor == host_count + 2 ? '>' : ' ');
-		printf("\n A select | + exit\n");
-		printf("\n In-stream: hold L+R+MINUS ~1s to quit the stream.\n");
+
+		printf("\n A select (wakes standby consoles) | + exit\n");
+		printf(" In-stream: hold L+R+MINUS ~1s to quit.\n");
+		printf(" Log: /config/hayai/hayai.log\n");
 		consoleUpdate(nullptr);
 
 		const uint64_t down = poll_buttons();
 		if(down & HidNpadButton_Plus)
 			return MenuResult::Exit;
 		if(down & HidNpadButton_AnyDown)
-			cursor = (cursor + 1) % item_count;
+			cursor = (cursor + 1) % count;
 		if(down & HidNpadButton_AnyUp)
-			cursor = (cursor + item_count - 1) % item_count;
+			cursor = (cursor + count - 1) % count;
 		if(down & HidNpadButton_A)
 		{
-			if(cursor < host_count)
+			MenuEntry &e = entries[cursor];
+			switch(e.kind)
 			{
-				if(!config_.hosts[cursor].registered)
+				case MenuEntry::Kind::Registered:
 				{
-					wait_any_button("Host is not registered yet - use one of the register options.");
-					continue;
+					HostEntry *host = config_.find_host(e.addr);
+					if(!host)
+						break;
+					if(e.standby)
+					{
+						if(!wake_and_wait(*host))
+							break;
+					}
+					selected_ = *host;
+					return MenuResult::Stream;
 				}
-				selected_ = config_.hosts[cursor];
-				return MenuResult::Stream;
+				case MenuEntry::Kind::Discovered:
+				{
+					if(e.standby)
+					{
+						wait_any_button("Console must be fully on (not standby) to register.\nPress any button.");
+						break;
+					}
+					selected_ = {};
+					selected_.addr = e.addr;
+					selected_.nickname = e.addr;
+					register_host(selected_);
+					break;
+				}
+				case MenuEntry::Kind::RegisterIp:
+					register_menu();
+					break;
+				case MenuEntry::Kind::Settings:
+					settings_menu();
+					break;
 			}
-			if(cursor == host_count)
-				discover_menu();
-			else if(cursor == host_count + 1)
-				register_menu();
-			else
-				settings_menu();
 		}
-		svcSleepThread(16'000'000ULL);
+		svcSleepThread(50'000'000ULL);	// 20 Hz menu; discovery updates at 2 Hz anyway
 	}
 	return MenuResult::Exit;
 }
 
-void Ui::discover_menu()
+bool Ui::wake_and_wait(const HostEntry &entry)
 {
-	Discovery discovery;
-	if(!discovery.start())
+	if(!Discovery::wakeup(entry.addr, entry.rp_regist_key))
 	{
-		wait_any_button("Discovery failed to start (network up?). Press any button.");
-		return;
+		wait_any_button("Failed to send wakeup. Press any button.");
+		return false;
 	}
 
-	int cursor = 0;
-	while(appletMainLoop())
+	const int max_wait_s = 40;
+	for(int elapsed_ds = 0; elapsed_ds < max_wait_s * 10 && appletMainLoop(); elapsed_ds++)
 	{
-		auto hosts = discovery.hosts();
-		const int count = static_cast<int>(hosts.size());
-		if(cursor >= count)
-			cursor = count ? count - 1 : 0;
+		auto discovered = discovery_.hosts();
+		for(const auto &d : discovered)
+		{
+			if(d.addr == entry.addr && d.ready)
+				return true;
+		}
 
-		consoleClear();
-		printf("Discovering consoles on the local network...\n\n");
-		for(int i = 0; i < count; i++)
+		if(elapsed_ds % 5 == 0)
 		{
-			printf(" %c %s  %s  [%s]%s\n", cursor == i ? '>' : ' ',
-				hosts[i].name.c_str(), hosts[i].addr.c_str(),
-				hosts[i].ready ? "ready" : "standby",
-				hosts[i].ps5 ? "" : " (not a PS5)");
+			consoleClear();
+			printf("Waking %s (%s)... %ds\n\n B cancel\n",
+				entry.nickname.c_str(), entry.addr.c_str(), elapsed_ds / 10);
+			consoleUpdate(nullptr);
 		}
-		if(!count)
-			printf(" (nothing yet)\n");
-		printf("\n A register selected | Y wake selected | B back\n");
-		consoleUpdate(nullptr);
-
-		const uint64_t down = poll_buttons();
-		if(down & HidNpadButton_B)
-			break;
-		if(down & HidNpadButton_AnyDown && count)
-			cursor = (cursor + 1) % count;
-		if(down & HidNpadButton_AnyUp && count)
-			cursor = (cursor + count - 1) % count;
-		if((down & HidNpadButton_Y) && count)
-		{
-			if(HostEntry *known = config_.find_host(hosts[cursor].addr); known && known->registered)
-				Discovery::wakeup(known->addr, known->rp_regist_key);
-			else
-				wait_any_button("Can only wake registered hosts. Press any button.");
-		}
-		if((down & HidNpadButton_A) && count)
-		{
-			const std::string addr = hosts[cursor].addr;
-			const std::string name = hosts[cursor].name;
-			discovery.stop();
-			selected_ = {};
-			selected_.addr = addr;
-			selected_.nickname = name;
-			register_host(selected_);
-			return;
-		}
+		if(poll_buttons() & HidNpadButton_B)
+			return false;
 		svcSleepThread(100'000'000ULL);
 	}
-	discovery.stop();
+
+	wait_any_button("Console did not wake in time. Press any button.");
+	return false;
 }
 
 void Ui::register_menu()
@@ -228,7 +287,7 @@ void Ui::register_host(HostEntry &entry)
 	char account_b64[32];
 	if(config_.settings.psn_account_id_b64.empty())
 	{
-		if(!keyboard_input("PSN Account ID (base64; see psn.flipscreen.games)", "",
+		if(!keyboard_input("PSN Account ID (base64, 12 chars)", "",
 				account_b64, sizeof(account_b64), false))
 			return;
 		config_.settings.psn_account_id_b64 = account_b64;
@@ -248,7 +307,8 @@ void Ui::register_host(HostEntry &entry)
 
 	// Console PIN from Settings > System > Remote Play > Link Device.
 	char pin_str[16];
-	if(!keyboard_input("Remote Play link PIN (8 digits)", "", pin_str, sizeof(pin_str), true))
+	if(!keyboard_input("PIN from PS5: Settings > System > Remote Play > Link Device", "",
+			pin_str, sizeof(pin_str), true))
 		return;
 
 	ChiakiRegistInfo info{};
@@ -291,7 +351,7 @@ void Ui::register_host(HostEntry &entry)
 		wait_any_button("Registered! Press any button.");
 	}
 	else
-		wait_any_button("Registration failed (check PIN / account ID / console state). Press any button.");
+		wait_any_button("Registration failed (check PIN / account ID / console fully on).\nDetails: /config/hayai/hayai.log. Press any button.");
 }
 
 void Ui::settings_menu()
@@ -358,6 +418,8 @@ void Ui::settings_menu()
 
 void Ui::run()
 {
+	discovery_.start();
+
 	while(appletMainLoop())
 	{
 		console_begin();
@@ -367,17 +429,24 @@ void Ui::run()
 		if(result == MenuResult::Exit)
 			break;
 
-		// The console released the default framebuffer; the stream may take it.
+		// Quiet the radio and free the discovery port while streaming; the
+		// console released the default framebuffer, the stream may take it.
+		discovery_.stop();
+
 		Stream stream;
 		const Stream::EndReason reason = stream.run(selected_, config_.settings);
+
+		discovery_.start();
 
 		if(reason == Stream::EndReason::Error)
 		{
 			console_begin();
-			wait_any_button("Session ended with an error (see nxlink log). Press any button.");
+			wait_any_button("Session ended with an error (see /config/hayai/hayai.log).\nPress any button.");
 			console_end();
 		}
 	}
+
+	discovery_.stop();
 }
 
 } // namespace hayai::app

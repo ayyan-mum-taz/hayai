@@ -80,6 +80,6 @@ hayai_add_nro(hayai
 	NAME hayai
 	TITLE "hayai"
 	AUTHOR "hayai contributors"
-	VERSION "0.1.0"
+	VERSION "0.1.1"
 	ICON "${CMAKE_SOURCE_DIR}/assets/icon.jpg"
 	ROMFS "${ROMFS_DIR}")

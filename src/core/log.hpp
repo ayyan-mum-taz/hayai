@@ -27,6 +27,11 @@ public:
 	// Flushes and stops the drain thread.
 	void stop();
 
+	// The devkitPro console is not thread-safe, and while it owns stdout the
+	// drain thread must not printf into it concurrently with the UI. The UI
+	// flips this around consoleInit/consoleExit; the file sink always runs.
+	void set_console_active(bool active) { console_active_.store(active, std::memory_order_relaxed); }
+
 	void write(ChiakiLogLevel level, const char *msg);
 
 	// ChiakiLog glue: chiaki_log_init(&log, mask, RingLog::chiaki_cb, &ring)
@@ -52,7 +57,9 @@ private:
 	uint64_t tail_ = 0;			// next slot to read (drain thread only)
 	std::atomic<uint64_t> dropped_{ 0 };
 	std::atomic<bool> stop_{ false };
+	std::atomic<bool> console_active_{ false };
 	void *thread_ = nullptr;	// Thread* (kept opaque to avoid switch.h here)
+	void *file_ = nullptr;		// FILE* (drain thread only)
 	ChiakiLog chiaki_log_{};
 };
 

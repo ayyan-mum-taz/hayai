@@ -5,6 +5,8 @@
 
 #include <chiaki/session.h>	// CHIAKI_SESSION_AUTH_SIZE
 
+#include <switch.h>
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
@@ -39,25 +41,54 @@ bool Discovery::start()
 	if(running_)
 		return true;
 
-	// PS5 discovery port is 9302 (PS4: 987). Broadcast to the local subnet.
-	auto *addr = static_cast<sockaddr_storage *>(calloc(1, sizeof(sockaddr_storage)));
-	auto *in = reinterpret_cast<sockaddr_in *>(addr);
-	in->sin_family = AF_INET;
-	in->sin_addr.s_addr = INADDR_BROADCAST;
+	// 255.255.255.255 alone is unreliable on the Switch's network stack: the
+	// ping that actually reaches consoles is the one to the interface's real
+	// subnet broadcast (e.g. 192.168.4.255), which nifm can tell us. The
+	// limited broadcast stays as send_addr because that is what makes the
+	// service send the extra per-subnet pings at all.
+	sockaddr_storage send_addr{};
+	auto *send_in = reinterpret_cast<sockaddr_in *>(&send_addr);
+	send_in->sin_family = AF_INET;
+	send_in->sin_addr.s_addr = INADDR_BROADCAST;
+
+	sockaddr_storage broadcast_addr{};
+	size_t broadcast_num = 0;
+	{
+		u32 current_addr = 0, subnet_mask = 0;
+		if(R_SUCCEEDED(nifmInitialize(NifmServiceType_User)))
+		{
+			if(R_SUCCEEDED(nifmGetCurrentIpConfigInfo(&current_addr, &subnet_mask, nullptr, nullptr, nullptr)))
+			{
+				auto *bin = reinterpret_cast<sockaddr_in *>(&broadcast_addr);
+				bin->sin_family = AF_INET;
+				bin->sin_addr.s_addr = current_addr | ~subnet_mask;
+				broadcast_num = 1;
+
+				char ip[INET_ADDRSTRLEN], bc[INET_ADDRSTRLEN];
+				inet_ntop(AF_INET, &current_addr, ip, sizeof(ip));
+				inet_ntop(AF_INET, &bin->sin_addr, bc, sizeof(bc));
+				HAYAI_LOGI("discovery: local %s, subnet broadcast %s", ip, bc);
+			}
+			nifmExit();
+		}
+		if(!broadcast_num)
+			HAYAI_LOGW("discovery: nifm gave no IP config; only limited broadcast will be used");
+	}
 
 	ChiakiDiscoveryServiceOptions options{};
 	options.hosts_max = 8;
 	options.host_drop_pings = 3;
 	options.ping_ms = 500;
 	options.ping_initial_ms = 100;
-	options.send_addr = addr;
+	options.send_addr = &send_addr;	// deep-copied by init
 	options.send_addr_size = sizeof(sockaddr_in);
+	options.broadcast_addrs = broadcast_num ? &broadcast_addr : nullptr;	// deep-copied by init
+	options.broadcast_num = broadcast_num;
 	options.send_host = nullptr;
 	options.cb = &Discovery::cb;
 	options.cb_user = this;
 
 	ChiakiErrorCode err = chiaki_discovery_service_init(&service_, &options, core::log().chiaki_log());
-	free(addr);
 	if(err != CHIAKI_ERR_SUCCESS)
 	{
 		HAYAI_LOGE("discovery: init failed: %s", chiaki_error_string(err));
