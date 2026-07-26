@@ -66,7 +66,9 @@ void Pipeline::frame_cb(uint8_t *buf, size_t buf_size, void *user)
 bool Pipeline::start()
 {
 	stop_.store(false, std::memory_order_relaxed);
-	if(!worker_.start(&Pipeline::thread_entry, this, core::kPrioHot, core::kCoreAux, 0x10000))
+	// 128 KB: opus_decode plus swresample need considerably more headroom than
+	// libnx's default, and this thread is the one that historically blew it.
+	if(!worker_.start(&Pipeline::thread_entry, this, core::kPrioHot, core::kCoreAux, 0x20000))
 		return false;
 	return true;
 }
@@ -133,8 +135,11 @@ void Pipeline::thread_loop()
 		audoutAppendAudioOutBuffer(&bufs[i]);	// prime with silence
 	}
 
-	// Decode + resample staging
-	int16_t decode_buf[5760 * kMaxChannels];	// max opus frame (120 ms @ 48k)
+	// Decode + resample staging. Both static: a 5760-sample decode buffer is
+	// 23 KB, and opus_decode itself is stack-hungry -- together they overflowed
+	// this thread's stack (crash inside opus_decode, faulting just below the
+	// stack base). Only this thread touches them.
+	static int16_t decode_buf[5760 * kMaxChannels];	// max opus frame (120 ms @ 48k)
 	static int16_t fifo[kFifoCapacity * kMaxChannels];
 	unsigned fifo_count = 0;	// in stereo samples
 
@@ -207,6 +212,21 @@ void Pipeline::thread_loop()
 				if(got > 0)
 					fifo_count += static_cast<unsigned>(got);
 			}
+		}
+
+		// Hard bound on backlog. The ppm servo corrects genuine clock drift,
+		// but it cannot claw back a burst (the console front-loads audio
+		// during handshake), and unbounded backlog is just latency that never
+		// goes away. Drop the oldest samples back to the setpoint instead --
+		// a sub-frame skip once, rather than permanent delay.
+		if(fifo_count > kMaxBacklogSamples)
+		{
+			const unsigned drop = fifo_count - kFillSetpointSamples;
+			memmove(fifo, fifo + drop * kMaxChannels,
+				(fifo_count - drop) * kMaxChannels * sizeof(int16_t));
+			fifo_count -= drop;
+			HAYAI_LOGW("audio: backlog %u ms exceeded bound, dropped %u ms",
+				(drop + fifo_count) / 48, drop / 48);
 		}
 
 		// Feed any released device buffers.

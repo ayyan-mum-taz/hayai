@@ -27,10 +27,15 @@ public:
 	// Flushes and stops the drain thread.
 	void stop();
 
-	// The devkitPro console is not thread-safe, and while it owns stdout the
-	// drain thread must not printf into it concurrently with the UI. The UI
-	// flips this around consoleInit/consoleExit; the file sink always runs.
-	void set_console_active(bool active) { console_active_.store(active, std::memory_order_relaxed); }
+	// Optional raw socket (from nxlinkConnectToHost(false, false)) to mirror
+	// lines to a host terminal.
+	//
+	// The drain thread must never touch stdio. consoleInit() points stdout at
+	// the console device and consoleExit() frees its framebuffer *without*
+	// restoring stdout, so any printf after the menu closes dereferences a
+	// dead framebuffer -- which is precisely how 0.1.1 crashed on connect.
+	// Writing to a socket fd (or the log file) avoids stdio completely.
+	void set_sink_fd(int fd) { sink_fd_.store(fd, std::memory_order_relaxed); }
 
 	void write(ChiakiLogLevel level, const char *msg);
 
@@ -57,7 +62,7 @@ private:
 	uint64_t tail_ = 0;			// next slot to read (drain thread only)
 	std::atomic<uint64_t> dropped_{ 0 };
 	std::atomic<bool> stop_{ false };
-	std::atomic<bool> console_active_{ false };
+	std::atomic<int> sink_fd_{ -1 };
 	void *thread_ = nullptr;	// Thread* (kept opaque to avoid switch.h here)
 	void *file_ = nullptr;		// FILE* (drain thread only)
 	ChiakiLog chiaki_log_{};

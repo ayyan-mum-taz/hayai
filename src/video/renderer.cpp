@@ -145,7 +145,7 @@ bool Renderer::create(gfx::Presenter &presenter, ChiakiLog *log)
 	if(!cmdbuf_)
 		return false;
 
-	cmd_mem_ = data_pool_.allocate(kCmdSliceSize * gfx::Presenter::kImageCount, DK_CMDMEM_ALIGNMENT);
+	cmd_mem_ = data_pool_.allocate(kCmdSliceSize * gfx::Presenter::kMaxImages, DK_CMDMEM_ALIGNMENT);
 	vertex_ = data_pool_.allocate(sizeof(Vertex) * 4, alignof(Vertex));
 	uniform_ = data_pool_.allocate(sizeof(ColorConv), DK_UNIFORM_BUF_ALIGNMENT);
 	image_descs_ = desc_pool_.allocate(sizeof(DkImageDescriptor) * kMaxMappings * 2, DK_IMAGE_DESCRIPTOR_ALIGNMENT);
@@ -342,7 +342,7 @@ bool Renderer::draw(int slot, AVFrame *frame)
 
 	cmdbuf_.clear();
 	cmdbuf_.addMemory(data_pool_.block(), cmd_mem_.offset + cmd_slice_ * kCmdSliceSize, kCmdSliceSize);
-	cmd_slice_ = (cmd_slice_ + 1) % gfx::Presenter::kImageCount;
+	cmd_slice_ = (cmd_slice_ + 1) % gfx::Presenter::kMaxImages;
 
 	dk::ImageView target{ presenter_->image(slot) };
 	cmdbuf_.bindRenderTargets(&target);

@@ -5,6 +5,7 @@
 #include <switch.h>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <cstring>
@@ -56,6 +57,8 @@ void RingLog::drain_loop()
 	FILE *f = fopen("/config/hayai/hayai.log", "w");
 	file_ = f;
 
+	char line[kSlotSize + 8];
+
 	while(true)
 	{
 		bool drained_any = false;
@@ -63,16 +66,26 @@ void RingLog::drain_loop()
 		uint32_t state = slot.ready.load(std::memory_order_acquire);
 		if(state == 1)
 		{
-			if(f)
-				fprintf(f, "[%c] %s\n", chiaki_log_level_char(slot.level), slot.text);
-			// stdout only while the console does not own it (i.e. during
-			// streaming, where stdout is nxlink or a null device). Writing to
-			// the console from two threads corrupts its state.
-			if(!console_active_.load(std::memory_order_relaxed))
-				printf("[%c] %s\n", chiaki_log_level_char(slot.level), slot.text);
+			const int len = snprintf(line, sizeof(line), "[%c] %s\n",
+				chiaki_log_level_char(slot.level), slot.text);
 			slot.ready.store(0, std::memory_order_release);
 			tail_++;
 			drained_any = true;
+
+			if(len > 0)
+			{
+				// Never stdio: see set_sink_fd(). Flushed per line because this
+				// file is the post-mortem channel and buffered tail data is
+				// exactly what a crash eats.
+				if(f)
+				{
+					fwrite(line, 1, static_cast<size_t>(len), f);
+					fflush(f);
+				}
+				const int fd = sink_fd_.load(std::memory_order_relaxed);
+				if(fd >= 0)
+					::write(fd, line, static_cast<size_t>(len));
+			}
 		}
 		else if(state == 2)
 		{
@@ -81,10 +94,6 @@ void RingLog::drain_loop()
 
 		if(!drained_any)
 		{
-			if(f)
-				fflush(f);
-			if(!console_active_.load(std::memory_order_relaxed))
-				fflush(stdout);
 			if(stop_.load(std::memory_order_relaxed))
 				break;
 			svcSleepThread(20'000'000ULL);	// 20 ms; logs are not latency-critical
@@ -96,7 +105,6 @@ void RingLog::drain_loop()
 		fclose(f);
 		file_ = nullptr;
 	}
-	fflush(stdout);
 }
 
 bool RingLog::start()
@@ -106,7 +114,7 @@ bool RingLog::start()
 	static Thread thread;
 	// Priority 0x3B: below everything that matters. Core 2, away from the
 	// receive path on core 1.
-	Result rc = threadCreate(&thread, &RingLog::drain_entry, this, nullptr, 0x4000, 0x3B, 2);
+	Result rc = threadCreate(&thread, &RingLog::drain_entry, this, nullptr, 0x8000, 0x3B, 2);
 	if(R_FAILED(rc))
 		return false;
 	rc = threadStart(&thread);

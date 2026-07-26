@@ -75,7 +75,9 @@ bool Sampler::start(ChiakiSession *session)
 	memset(touch_map_, -1, sizeof(touch_map_));
 	memset(touch_finger_, 0xFF, sizeof(touch_finger_));
 
-	return worker_.start(&Sampler::thread_entry, this, core::kPrioHot, core::kCoreAux, 0x8000);
+	// 64 KB: this thread runs the Madgwick orientation filter and touch mapping
+	// each tick. Cheap insurance against the class of bug that took down audio.
+	return worker_.start(&Sampler::thread_entry, this, core::kPrioHot, core::kCoreAux, 0x10000);
 }
 
 void Sampler::stop()

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
 #include "gfx/presenter.hpp"
+#include "core/log.hpp"
 
 #include <switch.h>
 
@@ -8,20 +9,27 @@
 
 namespace hayai::gfx {
 
-bool Presenter::create(unsigned width, unsigned height, Mode mode)
+bool Presenter::create(unsigned width, unsigned height, Mode mode, unsigned images)
 {
 	destroy();
 
 	width_ = width;
 	height_ = height;
+	image_count_ = images < 2 ? 2 : (images > kMaxImages ? kMaxImages : images);
 
 	device_ = dk::DeviceMaker{}.create();
 	if(!device_)
+	{
+		HAYAI_LOGE("presenter: dkDeviceCreate failed");
 		return false;
+	}
 
 	queue_ = dk::QueueMaker{ device_ }.setFlags(DkQueueFlags_Graphics).create();
 	if(!queue_)
+	{
+		HAYAI_LOGE("presenter: dkQueueCreate failed");
 		return false;
+	}
 
 	dk::ImageLayout fb_layout;
 	dk::ImageLayoutMaker{ device_ }
@@ -33,16 +41,24 @@ bool Presenter::create(unsigned width, unsigned height, Mode mode)
 	const uint32_t fb_size = static_cast<uint32_t>(fb_layout.getSize());
 	const uint32_t fb_align = fb_layout.getAlignment();
 
-	if(!fb_pool_.create(device_, (fb_size + fb_align) * kImageCount + DK_MEMBLOCK_ALIGNMENT,
+	if(!fb_pool_.create(device_, (fb_size + fb_align) * image_count_ + DK_MEMBLOCK_ALIGNMENT,
 			DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image))
+	{
+		HAYAI_LOGE("presenter: framebuffer pool alloc failed (%u bytes)",
+			(fb_size + fb_align) * image_count_ + DK_MEMBLOCK_ALIGNMENT);
 		return false;
+	}
 
-	std::array<const DkImage *, kImageCount> image_ptrs{};
-	for(unsigned i = 0; i < kImageCount; i++)
+	std::array<const DkImage *, kMaxImages> image_ptrs{};
+	for(unsigned i = 0; i < image_count_; i++)
 	{
 		Pool::Alloc a = fb_pool_.allocate(fb_size, fb_align);
 		if(!a)
+		{
+			HAYAI_LOGE("presenter: framebuffer %u suballoc failed (%u/%u used)",
+				i, fb_pool_.used(), fb_pool_.capacity());
 			return false;
+		}
 		images_[i].initialize(fb_layout, fb_pool_.block(), a.offset);
 		image_ptrs[i] = &images_[i];
 	}
@@ -50,9 +66,12 @@ bool Presenter::create(unsigned width, unsigned height, Mode mode)
 	NWindow *win = nwindowGetDefault();
 	nwindowSetDimensions(win, width_, height_);
 
-	swapchain_ = dk::SwapchainMaker{ device_, win, image_ptrs }.create();
+	swapchain_ = dk::SwapchainMaker{ device_, win, image_ptrs.data(), image_count_ }.create();
 	if(!swapchain_)
+	{
+		HAYAI_LOGE("presenter: dkSwapchainCreate failed");
 		return false;
+	}
 
 	set_mode(mode);
 	return true;

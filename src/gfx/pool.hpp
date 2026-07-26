@@ -23,7 +23,11 @@ public:
 		uint32_t offset = 0;
 		uint32_t size = 0;
 
-		explicit operator bool() const { return cpu != nullptr; }
+		// Validity is size-based, not cpu-based: GPU-only pools (framebuffer
+		// images, which carry no CPU-access flags) legitimately have a null
+		// cpu pointer, and testing that instead rejected every valid
+		// framebuffer allocation.
+		explicit operator bool() const { return size != 0; }
 	};
 
 	Pool() = default;

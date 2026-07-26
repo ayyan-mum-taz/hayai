@@ -44,11 +44,21 @@
 
 #define TAKION_REORDER_QUEUE_SIZE_EXP 4 // => 16 entries
 #define TAKION_AV_VIDEO_REORDER_QUEUE_SIZE_EXP 6 // => 64 entries
-// hayai: made overridable from the build. FEC already covers intra-frame gaps,
-// so the long wait mostly adds latency; see docs/latency.md.
+// hayai: runtime-tunable. This is a genuine trade, not a constant: too long and
+// a lost packet stalls the pipeline for its whole duration; too short and
+// ordinary Wi-Fi jitter is mistaken for loss, costing an FEC failure and an
+// IDR round trip -- which is far more visible than the wait would have been.
+// Latency profiles want it small, smooth profiles want it near the real jitter.
 #ifndef TAKION_AV_REORDER_TIMEOUT_US
 #define TAKION_AV_REORDER_TIMEOUT_US 16000 // ~1 frame at 60fps
 #endif
+
+uint64_t chiaki_takion_av_reorder_timeout_us = TAKION_AV_REORDER_TIMEOUT_US;
+
+CHIAKI_EXPORT void chiaki_takion_set_av_reorder_timeout_us(uint64_t us)
+{
+	chiaki_takion_av_reorder_timeout_us = us;
+}
 #define TAKION_SEND_BUFFER_SIZE 16
 
 #define TAKION_POSTPONE_PACKETS_SIZE 32
@@ -1000,7 +1010,7 @@ static void takion_av_queue_flush_with_timeout(ChiakiTakion *takion, ChiakiReord
 			break;
 		}
 
-		if(now - *head_wait_start_us <= TAKION_AV_REORDER_TIMEOUT_US)
+		if(now - *head_wait_start_us <= (int64_t)chiaki_takion_av_reorder_timeout_us)
 			break;
 
 		// Timeout exceeded: skip directly to the first buffered packet so startup
@@ -1050,7 +1060,7 @@ static uint64_t takion_av_queues_next_timeout_ms(ChiakiTakion *takion)
 		if(head_wait_start_us == 0)
 			continue;
 
-		int64_t remaining_us = TAKION_AV_REORDER_TIMEOUT_US - (now - head_wait_start_us);
+		int64_t remaining_us = (int64_t)chiaki_takion_av_reorder_timeout_us - (now - head_wait_start_us);
 		if(remaining_us <= 0)
 			return 0;
 
@@ -1423,9 +1433,15 @@ static void takion_handle_packet_message_data(ChiakiTakion *takion, uint8_t *pac
 
 static void takion_handle_packet_message_data_ack(ChiakiTakion *takion, uint8_t flags, uint8_t *buf, size_t buf_size)
 {
-	if(buf_size != 0xc)
+	// hayai: was `buf_size != 0xc`, which rejected every ack carrying gap-ack
+	// blocks -- i.e. exactly the acks sent while packets are being lost. The
+	// check below (gap_ack_blocks_count * 4 + 0xc) already validates the real
+	// size, and proves larger acks are expected. Dropping them meant the send
+	// buffer was never acked during loss, so it overflowed and retransmitted,
+	// delaying controller input precisely when the link was already struggling.
+	if(buf_size < 0xc)
 	{
-		CHIAKI_LOGE(takion->log, "Takion received data ack with size %zx != %#x", buf_size, 0xc);
+		CHIAKI_LOGE(takion->log, "Takion received data ack with size %zx < %#x", buf_size, 0xc);
 		return;
 	}
 

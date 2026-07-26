@@ -81,6 +81,12 @@ typedef enum {
 	CHIAKI_AUDIO_VIDEO_DISABLED = 3 //(bits: 11)
 } ChiakiDisableAudioVideo;
 
+/**
+ * hayai addition: set the AV reorder head-of-line wait at runtime.
+ * See the comment at the definition in takion.c.
+ */
+CHIAKI_EXPORT void chiaki_takion_set_av_reorder_timeout_us(uint64_t us);
+
 typedef struct chiaki_takion_event_t
 {
 	ChiakiTakionEventType type;

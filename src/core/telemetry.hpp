@@ -45,6 +45,8 @@ public:
 	// Called from anywhere (drain thread does the logging).
 	void log_summary();
 
+	void fec_failure() { fec_failures_.fetch_add(1, std::memory_order_relaxed); }
+	void frame_dropped() { frames_dropped_.fetch_add(1, std::memory_order_relaxed); }
 	void audio_underrun() { audio_underruns_.fetch_add(1, std::memory_order_relaxed); }
 	void audio_stats(int fill_ms, int comp_ppm)
 	{
@@ -62,6 +64,8 @@ private:
 	std::atomic<uint64_t> vsync_period_ns_{ 16'666'667 };
 
 	std::atomic<uint64_t> audio_underruns_{ 0 };
+	std::atomic<uint64_t> frames_dropped_{ 0 };
+	std::atomic<uint64_t> fec_failures_{ 0 };
 	std::atomic<int> audio_fill_ms_{ 0 };
 	std::atomic<int> audio_comp_ppm_{ 0 };
 };

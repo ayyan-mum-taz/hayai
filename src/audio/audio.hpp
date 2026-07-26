@@ -46,7 +46,14 @@ private:
 	// device-side queueing at 20-30 ms worst case, ~15 typical.
 	static constexpr unsigned kOutSamples = 480;
 	static constexpr unsigned kOutBuffers = 3;
-	static constexpr int kFillSetpointSamples = 480;	// target backlog beyond in-flight
+	// Audio needs a real jitter buffer, unlike video. A late video frame is an
+	// invisible 16 ms repeat; a late audio buffer is an audible click. Wi-Fi
+	// delivers opus packets in bursts, so 10 ms of slack produced thousands of
+	// underruns -- 30 ms costs nothing perceptible and eliminates them.
+	static constexpr int kFillSetpointSamples = 1440;	// 30 ms
+	// Only cut back when the backlog is genuinely standing latency (100 ms),
+	// rather than fighting normal burstiness.
+	static constexpr unsigned kMaxBacklogSamples = 4800;
 
 	struct Packet
 	{

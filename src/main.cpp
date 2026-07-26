@@ -52,13 +52,17 @@ int main(int argc, char *argv[])
 	(void)argc;
 	(void)argv;
 
-	nxlinkStdio();	// harmless failure when no netloader is listening
+	// Deliberately NOT nxlinkStdio(): redirecting stdout is what makes logging
+	// unsafe once the text console has been torn down. We keep the raw socket
+	// and the logger writes to it directly, bypassing stdio entirely.
+	const int nxlink_fd = nxlinkConnectToHost(false, false);
 
+	hayai::core::log().set_sink_fd(nxlink_fd);
 	hayai::core::log().start();
 	hayai::core::install_chiaki_affinity_hook();
 
 	chiaki_lib_init();
-	HAYAI_LOGI("hayai 0.1.1 starting");
+	HAYAI_LOGI("hayai 0.3.0 starting");
 
 	hayai::app::Config config;
 	if(!config.load())
@@ -72,5 +76,7 @@ int main(int argc, char *argv[])
 	config.save();
 	HAYAI_LOGI("bye");
 	hayai::core::log().stop();
+	if(nxlink_fd >= 0)
+		close(nxlink_fd);
 	return 0;
 }

@@ -137,20 +137,29 @@ bool Config::load()
 			if(strcmp(key, "resolution") == 0)
 			{
 				if(strcmp(val, "1080p") == 0)
-					settings.resolution = CHIAKI_VIDEO_RESOLUTION_PRESET_1080p;
+					settings.resolution = Res::R1080;
 				else if(strcmp(val, "540p") == 0)
-					settings.resolution = CHIAKI_VIDEO_RESOLUTION_PRESET_540p;
+					settings.resolution = Res::R540;
+				else if(strcmp(val, "480p") == 0)
+					settings.resolution = Res::R480;
 				else if(strcmp(val, "360p") == 0)
-					settings.resolution = CHIAKI_VIDEO_RESOLUTION_PRESET_360p;
+					settings.resolution = Res::R360;
 				else
-					settings.resolution = CHIAKI_VIDEO_RESOLUTION_PRESET_720p;
+					settings.resolution = Res::R720;
 			}
 			else if(strcmp(key, "fps") == 0)
 				settings.fps = (strcmp(val, "30") == 0) ? CHIAKI_VIDEO_FPS_PRESET_30 : CHIAKI_VIDEO_FPS_PRESET_60;
 			else if(strcmp(key, "bitrate") == 0)
 				settings.bitrate = static_cast<uint32_t>(atoi(val));
-			else if(strcmp(key, "vsync") == 0)
-				settings.vsync = atoi(val) != 0;
+			else if(strcmp(key, "profile") == 0)
+			{
+				if(strcmp(val, "smooth") == 0)
+					settings.profile = Profile::Smooth;
+				else if(strcmp(val, "quality") == 0)
+					settings.profile = Profile::Quality;
+				else
+					settings.profile = Profile::Latency;
+			}
 			else if(strcmp(key, "controller_only") == 0)
 				settings.controller_only = atoi(val) != 0;
 			else if(strcmp(key, "backlight_off") == 0)
@@ -180,18 +189,12 @@ bool Config::save() const
 
 	fprintf(f, "# hayai configuration. This file contains secrets - do not share it.\n\n");
 	fprintf(f, "[settings]\n");
-	const char *res = "720p";
-	switch(settings.resolution)
-	{
-		case CHIAKI_VIDEO_RESOLUTION_PRESET_1080p: res = "1080p"; break;
-		case CHIAKI_VIDEO_RESOLUTION_PRESET_540p: res = "540p"; break;
-		case CHIAKI_VIDEO_RESOLUTION_PRESET_360p: res = "360p"; break;
-		default: break;
-	}
-	fprintf(f, "resolution = %s\n", res);
+	fprintf(f, "resolution = %s\n", settings.res_name());
 	fprintf(f, "fps = %u\n", static_cast<unsigned>(settings.fps));
 	fprintf(f, "bitrate = %u\n", settings.bitrate);
-	fprintf(f, "vsync = %d\n", settings.vsync ? 1 : 0);
+	fprintf(f, "profile = %s\n",
+		settings.profile == Profile::Smooth ? "smooth"
+			: settings.profile == Profile::Quality ? "quality" : "latency");
 	fprintf(f, "controller_only = %d\n", settings.controller_only ? 1 : 0);
 	fprintf(f, "backlight_off = %d\n", settings.backlight_off ? 1 : 0);
 	fprintf(f, "pin_clocks = %d\n", settings.pin_clocks ? 1 : 0);

@@ -21,7 +21,6 @@ PadState g_pad;
 
 void console_begin()
 {
-	core::log().set_console_active(true);
 	consoleInit(nullptr);
 	padConfigureInput(1, HidNpadStyleSet_NpadStandard);
 	padInitializeDefault(&g_pad);
@@ -29,8 +28,9 @@ void console_begin()
 
 void console_end()
 {
+	// Note: consoleExit does not restore stdout, so nothing may printf after
+	// this point. The logger writes to a file/socket, never stdio.
 	consoleExit(nullptr);
-	core::log().set_console_active(false);
 }
 
 uint64_t poll_buttons()
@@ -165,7 +165,7 @@ Ui::MenuResult Ui::main_menu()
 			cursor = count - 1;
 
 		consoleClear();
-		printf("hayai 0.1.1 - latency-first PS5 remote play\n");
+		printf("hayai 0.3.0 - latency-first PS5 remote play\n");
 		if(appletGetAppletType() != AppletType_Application &&
 			appletGetAppletType() != AppletType_SystemApplication)
 			printf("!! applet mode: less memory, worse scheduling. Launch by holding R over a game.\n");
@@ -363,13 +363,19 @@ void Ui::settings_menu()
 	while(appletMainLoop())
 	{
 		consoleClear();
-		const char *res = s.resolution == CHIAKI_VIDEO_RESOLUTION_PRESET_1080p ? "1080p"
-			: s.resolution == CHIAKI_VIDEO_RESOLUTION_PRESET_540p ? "540p"
-			: s.resolution == CHIAKI_VIDEO_RESOLUTION_PRESET_360p ? "360p" : "720p";
-		printf("Settings (latency-first defaults)\n\n");
-		printf(" %c Resolution: %s\n", cursor == 0 ? '>' : ' ', res);
+		const char *res = s.res_name();
+		printf("Settings\n\n");
+		printf(" Session will request: %ux%u @ %u fps, %u kbps\n\n",
+			s.width(), s.height(), static_cast<unsigned>(s.fps), s.default_bitrate_kbps());
+		printf(" %c Resolution: %s%s\n", cursor == 0 ? '>' : ' ', res,
+			s.resolution == Res::R480 ? "  (848x480, non-standard)" : "");
 		printf(" %c FPS: %u\n", cursor == 1 ? '>' : ' ', static_cast<unsigned>(s.fps));
-		printf(" %c Present: %s\n", cursor == 2 ? '>' : ' ', s.vsync ? "vsync (tear-free, +latency)" : "immediate (lowest latency)");
+		printf(" %c Profile: %s\n", cursor == 2 ? '>' : ' ', s.profile_name());
+		printf("     %s\n", s.profile == Profile::Latency
+			? "immediate present, 2 buffers, console holds quality"
+			: s.profile == Profile::Smooth
+				? "vsync + 3 buffers, honest congestion reports so the console eases off"
+				: "vsync + 3 buffers, console picks its highest bitrate");
 		printf(" %c Controller-only mode: %s\n", cursor == 3 ? '>' : ' ', s.controller_only ? "on" : "off");
 		printf(" %c   Backlight off while streaming: %s\n", cursor == 4 ? '>' : ' ', s.backlight_off ? "on" : "off");
 		printf(" %c Pin clocks during stream: %s\n", cursor == 5 ? '>' : ' ', s.pin_clocks ? "on" : "off");
@@ -388,17 +394,23 @@ void Ui::settings_menu()
 			switch(cursor)
 			{
 				case 0:
-					s.resolution = s.resolution == CHIAKI_VIDEO_RESOLUTION_PRESET_720p
-						? CHIAKI_VIDEO_RESOLUTION_PRESET_1080p
-						: s.resolution == CHIAKI_VIDEO_RESOLUTION_PRESET_1080p
-							? CHIAKI_VIDEO_RESOLUTION_PRESET_540p
-							: CHIAKI_VIDEO_RESOLUTION_PRESET_720p;
+					switch(s.resolution)
+					{
+						case Res::R360: s.resolution = Res::R480; break;
+						case Res::R480: s.resolution = Res::R540; break;
+						case Res::R540: s.resolution = Res::R720; break;
+						case Res::R720: s.resolution = Res::R1080; break;
+						default: s.resolution = Res::R360; break;
+					}
+					s.bitrate = 0;	// follow the new resolution's default
 					break;
 				case 1:
 					s.fps = s.fps == CHIAKI_VIDEO_FPS_PRESET_60 ? CHIAKI_VIDEO_FPS_PRESET_30 : CHIAKI_VIDEO_FPS_PRESET_60;
 					break;
 				case 2:
-					s.vsync = !s.vsync;
+					s.profile = s.profile == Profile::Latency ? Profile::Smooth
+						: s.profile == Profile::Smooth ? Profile::Quality : Profile::Latency;
+					s.apply_profile_defaults();
 					break;
 				case 3:
 					s.controller_only = !s.controller_only;

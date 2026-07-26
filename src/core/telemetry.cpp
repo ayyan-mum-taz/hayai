@@ -106,11 +106,18 @@ void Telemetry::log_summary()
 	const uint32_t t50 = percentile_us(total_us, n, 50);
 	const uint32_t t99 = percentile_us(total_us, n, 99);
 
-	HAYAI_LOGI("tl: %u frames | au->decoded %u.%03u/%u.%03u ms | au->presented %u.%03u/%u.%03u ms (p50/p99) | lost %u | phase %d%% | a_fill %d ms a_comp %d ppm a_under %llu | logdrop %llu",
-		n,
+	// Effective present rate over the window: the number the eye actually
+	// judges, as opposed to how many frames arrived.
+	const double fps = n * 1e9 / static_cast<double>(now - (summary_last_ns_ - 2'000'000'000ULL));
+
+	HAYAI_LOGI("tl: %u frames %.1f fps | au->decoded %u.%03u/%u.%03u ms | au->presented %u.%03u/%u.%03u ms (p50/p99) | lost %u drop %llu fec %llu | phase %d%% | a_fill %d ms a_comp %d ppm a_under %llu | logdrop %llu",
+		n, fps,
 		d50 / 1000, d50 % 1000, d99 / 1000, d99 % 1000,
 		t50 / 1000, t50 % 1000, t99 / 1000, t99 % 1000,
-		lost, phase_pct,
+		lost,
+		static_cast<unsigned long long>(frames_dropped_.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(fec_failures_.load(std::memory_order_relaxed)),
+		phase_pct,
 		audio_fill_ms_.load(std::memory_order_relaxed),
 		audio_comp_ppm_.load(std::memory_order_relaxed),
 		static_cast<unsigned long long>(audio_underruns_.load(std::memory_order_relaxed)),

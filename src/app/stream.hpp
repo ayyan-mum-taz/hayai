@@ -3,6 +3,7 @@
 
 #include "app/config.hpp"
 #include "audio/audio.hpp"
+#include "core/telemetry.hpp"
 #include "core/thread.hpp"
 #include "gfx/presenter.hpp"
 #include "input/input.hpp"
@@ -11,21 +12,26 @@
 
 #include <chiaki/session.h>
 
+extern "C" {
+#include <libavutil/frame.h>
+}
+
 #include <atomic>
 
 namespace hayai::app {
 
 // One remote play session, start to finish.
 //
-// The defining decision: the video callback runs decode, render and present
-// synchronously on the takion receive thread. Zero thread handoffs between
-// datagram and pixel -- every handoff on Horizon is a scheduler wakeup with a
-// tail. The socket's receive buffer absorbs the packets that arrive during the
-// few ms we spend inside NVDEC.
+// Decode runs synchronously on the takion receive thread -- that part is free,
+// NVDEC is fixed-function and returns in ~1.7 ms. Presentation does not:
+// dkQueueAcquireImage blocks until the compositor releases a buffer, which can
+// be most of a refresh interval, and blocking there would stall the thread that
+// drains the socket. So the decoded frame is handed to a one-slot mailbox and a
+// dedicated present thread does acquire/draw/present.
 //
-// In controller-only mode no graphics exist at all: video is dropped at the
-// takion layer (pre-parse), the minimum video profile is requested to cut
-// airtime, and the backlight can be switched off.
+// The mailbox is newest-wins by design: if a frame is still waiting when the
+// next one decodes, the waiting one is dropped. Showing a stale frame to
+// preserve a queue is exactly the trade this project exists to refuse.
 class Stream
 {
 public:
@@ -42,7 +48,9 @@ public:
 private:
 	static void event_cb(ChiakiEvent *event, void *user);
 	static bool video_cb(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool frame_recovered, void *user);
+	static void present_entry(void *arg);
 
+	void present_loop();
 	bool setup_video();
 
 	Settings settings_{};
@@ -52,6 +60,16 @@ private:
 	video::Renderer renderer_;
 	audio::Pipeline audio_;
 	input::Sampler input_;
+
+	// --- present mailbox ---
+	core::Worker present_thread_;
+	Mutex mailbox_mutex_{};
+	CondVar mailbox_cond_{};
+	AVFrame *mailbox_frame_ = nullptr;	// holds a ref while pending
+	core::Telemetry::Frame *mailbox_tl_ = nullptr;
+	bool mailbox_full_ = false;
+	std::atomic<bool> present_stop_{ false };
+	std::atomic<uint64_t> frames_dropped_{ 0 };
 
 	core::Worker vsync_watcher_;
 	std::atomic<bool> vsync_stop_{ false };

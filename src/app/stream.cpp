@@ -146,6 +146,9 @@ void Stream::event_cb(ChiakiEvent *event, void *user)
 			HAYAI_LOGI("session: console requests login PIN");
 			self->login_pin_needed_.store(true, std::memory_order_relaxed);
 			break;
+		case CHIAKI_EVENT_VIDEO_FEC_FAILURE:
+			core::telemetry().fec_failure();
+			break;
 		case CHIAKI_EVENT_QUIT:
 			HAYAI_LOGI("session: quit (%s)", chiaki_quit_reason_string(event->quit.reason));
 			if(chiaki_quit_reason_is_error(event->quit.reason))
@@ -157,8 +160,9 @@ void Stream::event_cb(ChiakiEvent *event, void *user)
 	}
 }
 
-// The hot path. Runs on the takion receive thread; between entry and return
-// there is no queue, no lock and no other thread.
+// The hot path. Runs on the takion receive thread: decrypt/reassemble happen
+// upstream of us, we decode, and then we hand off. Nothing here blocks on the
+// display -- see the note on Stream for why present lives on its own thread.
 bool Stream::video_cb(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool frame_recovered, void *user)
 {
 	(void)frame_recovered;
@@ -171,36 +175,124 @@ bool Stream::video_cb(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool f
 
 	const bool got_frame = self->decoder_.submit(buf, buf_size);
 	tl.decode_done_ns = now_ns();
+	if(!got_frame)
+		return true;
 
-	if(got_frame)
+	// Publish to the mailbox. av_frame_ref is a refcount bump on the NVDEC
+	// surface, not a pixel copy, so this stays O(1) and keeps the decoder free
+	// to reuse its own frame on the next packet.
+	mutexLock(&self->mailbox_mutex_);
+	if(self->mailbox_full_)
 	{
-		const int slot = self->presenter_.acquire();
-		if(self->renderer_.draw(slot, self->decoder_.frame()))
-			self->presenter_.present(slot);
-		core::telemetry().end_frame(tl);
+		// Present thread is still busy with the previous frame: drop it, keep
+		// the newer one. Latency over completeness.
+		av_frame_unref(self->mailbox_frame_);
+		self->frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+		core::telemetry().frame_dropped();
 	}
+	if(av_frame_ref(self->mailbox_frame_, self->decoder_.frame()) == 0)
+	{
+		self->mailbox_tl_ = &tl;
+		self->mailbox_full_ = true;
+		condvarWakeOne(&self->mailbox_cond_);
+	}
+	mutexUnlock(&self->mailbox_mutex_);
 
 	return true;
 }
 
+void Stream::present_entry(void *arg)
+{
+	static_cast<Stream *>(arg)->present_loop();
+}
+
+void Stream::present_loop()
+{
+	AVFrame *frame = av_frame_alloc();
+	if(!frame)
+	{
+		HAYAI_LOGE("present: frame alloc failed");
+		return;
+	}
+
+	HAYAI_LOGI("present: thread up (%u images, %s)",
+		presenter_.image_count(),
+		presenter_.mode() == gfx::Presenter::Mode::Vsync ? "vsync" : "immediate");
+
+	while(!present_stop_.load(std::memory_order_relaxed))
+	{
+		core::Telemetry::Frame *tl = nullptr;
+
+		mutexLock(&mailbox_mutex_);
+		while(!mailbox_full_ && !present_stop_.load(std::memory_order_relaxed))
+			condvarWaitTimeout(&mailbox_cond_, &mailbox_mutex_, 50'000'000ULL);
+		if(mailbox_full_)
+		{
+			av_frame_move_ref(frame, mailbox_frame_);
+			tl = mailbox_tl_;
+			mailbox_full_ = false;
+		}
+		mutexUnlock(&mailbox_mutex_);
+
+		if(!tl)
+			continue;
+
+		// Blocking here is fine: this thread owns nothing the network needs.
+		const int slot = presenter_.acquire();
+		if(renderer_.draw(slot, frame))
+			presenter_.present(slot);
+		core::telemetry().end_frame(*tl);
+		av_frame_unref(frame);
+	}
+
+	av_frame_free(&frame);
+	HAYAI_LOGI("present: thread down (%llu frames dropped as stale)",
+		static_cast<unsigned long long>(frames_dropped_.load(std::memory_order_relaxed)));
+}
+
 bool Stream::setup_video()
 {
+	// Breadcrumbs: each stage logs before it runs, and the log is flushed per
+	// line, so if any of this faults the last line in hayai.log names the stage.
+	HAYAI_LOGI("video: creating deko3d device/swapchain (1280x720, %s, %u images)",
+		settings_.vsync() ? "vsync" : "immediate", settings_.swapchain_images());
 	if(!presenter_.create(1280, 720,
-			settings_.vsync ? gfx::Presenter::Mode::Vsync : gfx::Presenter::Mode::Immediate))
+			settings_.vsync() ? gfx::Presenter::Mode::Vsync : gfx::Presenter::Mode::Immediate,
+			settings_.swapchain_images()))
 	{
 		HAYAI_LOGE("stream: presenter init failed");
 		return false;
 	}
+
+	HAYAI_LOGI("video: opening NVDEC decoder");
 	if(!decoder_.create(CHIAKI_CODEC_H265, core::log().chiaki_log()))
 	{
 		HAYAI_LOGE("stream: decoder init failed");
 		return false;
 	}
+
+	HAYAI_LOGI("video: loading shaders and building render state");
 	if(!renderer_.create(presenter_, core::log().chiaki_log()))
 	{
 		HAYAI_LOGE("stream: renderer init failed");
 		return false;
 	}
+
+	// Present runs on its own thread so that dkQueueAcquireImage never blocks
+	// the socket-draining thread. Core 0 is otherwise idle during a stream.
+	mailbox_frame_ = av_frame_alloc();
+	if(!mailbox_frame_)
+		return false;
+	mutexInit(&mailbox_mutex_);
+	condvarInit(&mailbox_cond_);
+	present_stop_.store(false, std::memory_order_relaxed);
+	if(!present_thread_.start(&Stream::present_entry, this, core::kPrioHot, core::kCoreMain, 0x10000))
+	{
+		HAYAI_LOGE("stream: present thread failed to start");
+		return false;
+	}
+
+	HAYAI_LOGI("video: pipeline ready");
 	video_up_ = true;
 	return true;
 }
@@ -220,7 +312,7 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 	info.video_profile_auto_downgrade = true;
 	info.enable_keyboard = false;
 	info.enable_dualsense = false;
-	info.packet_loss_max = 0.05;
+	info.packet_loss_max = settings_.packet_loss_max();
 	info.enable_idr_on_fec_failure = true;
 
 	if(settings_.controller_only)
@@ -233,17 +325,24 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 	}
 	else
 	{
-		chiaki_connect_video_profile_preset(&info.video_profile,
-			settings_.resolution, settings_.fps);
-		if(settings_.bitrate)
-			info.video_profile.bitrate = settings_.bitrate;
+		// Built explicitly rather than via the preset helper: the launch spec
+		// carries width/height directly, which is what lets us offer 480p.
+		info.video_profile.width = settings_.width();
+		info.video_profile.height = settings_.height();
+		info.video_profile.max_fps = static_cast<unsigned>(settings_.fps);
+		info.video_profile.bitrate = settings_.default_bitrate_kbps();
 		info.video_profile.codec = CHIAKI_CODEC_H265;
 	}
 
-	HAYAI_LOGI("stream: %s '%s' %ux%u@%u %u kbps%s",
+	// Per-profile head-of-line wait for out-of-order AV packets.
+	chiaki_takion_set_av_reorder_timeout_us(settings_.reorder_timeout_us());
+
+	HAYAI_LOGI("stream: %s '%s' %ux%u@%u %u kbps | profile %s, loss_max %.0f%%, reorder %llu us%s",
 		host.addr.c_str(), host.nickname.c_str(),
 		info.video_profile.width, info.video_profile.height, info.video_profile.max_fps,
-		info.video_profile.bitrate,
+		info.video_profile.bitrate, settings_.profile_name(),
+		settings_.packet_loss_max() * 100.0,
+		static_cast<unsigned long long>(settings_.reorder_timeout_us()),
 		settings_.controller_only ? " (controller-only)" : "");
 
 	ChiakiErrorCode err = chiaki_session_init(&session_, &info, core::log().chiaki_log());
@@ -265,20 +364,26 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 		chiaki_session_set_video_sample_cb(&session_, &Stream::video_cb, this);
 	}
 
+	HAYAI_LOGI("stream: starting audio pipeline");
 	ChiakiAudioSink sink{};
 	audio_.sink(&sink);
 	chiaki_session_set_audio_sink(&session_, &sink);
 	audio_.start();
 
+	HAYAI_LOGI("stream: starting input sampler");
 	input_.start(&session_);
 
+	HAYAI_LOGI("stream: starting vsync watcher");
 	core::telemetry().start_session();
 	vsync_stop_.store(false, std::memory_order_relaxed);
 	vsync_watcher_.start(&vsync_watch_entry, &vsync_stop_, core::kPrioIdle, core::kCoreMain);
 
 	ClockPin clocks;
 	if(settings_.pin_clocks)
+	{
+		HAYAI_LOGI("stream: pinning clocks");
 		clocks.pin();
+	}
 
 	const bool backlight_off = settings_.controller_only && settings_.backlight_off;
 	if(backlight_off)
@@ -287,6 +392,7 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 			lblSwitchBacklightOff(500'000'000ULL);
 	}
 
+	HAYAI_LOGI("stream: starting session (handshake)");
 	err = chiaki_session_start(&session_);
 	const bool started = err == CHIAKI_ERR_SUCCESS;
 	if(!started)
@@ -338,6 +444,18 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 
 	vsync_stop_.store(true, std::memory_order_relaxed);
 	vsync_watcher_.join();
+
+	// No more callbacks can publish frames now; drain the mailbox and stop.
+	present_stop_.store(true, std::memory_order_relaxed);
+	mutexLock(&mailbox_mutex_);
+	condvarWakeAll(&mailbox_cond_);
+	mutexUnlock(&mailbox_mutex_);
+	present_thread_.join();
+	if(mailbox_frame_)
+	{
+		av_frame_free(&mailbox_frame_);
+		mailbox_full_ = false;
+	}
 
 	if(backlight_off)
 	{
