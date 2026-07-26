@@ -82,6 +82,41 @@ no render loop at all (GPU idle, thermal headroom, sustained clocks).
 
 **Audit items:** frameprocessor buffer prealloc (zero steady-state mallocs); MTU vs path-MTU + fragmentation warning; allowed thread-priority range under hbl vs NSP takeover; extend HID probe to sixaxis sampling rate.
 
+## Measured on hardware (first sessions)
+
+| Claim | Result |
+|---|---|
+| Zero-copy NVDEC->deko3d correctness | **Confirmed.** Correct image, so the block-linear layout matches and no completion fence is needed before sampling. |
+| Client-side video cost | **1.2 ms p50, 1.4 ms p99** (au-complete -> present), 540p60, sustained 57-59.5 fps |
+| NVDEC decode alone | ~1.0-1.1 ms p50 |
+| vsync phase capture | **Not working** -- `viGetDisplayVsyncEvent` unavailable once deko3d owns the display, so beat-phase telemetry reports -1 |
+
+### Bugs the telemetry found that reading did not
+
+1. **Input flood (ours).** libchiaki's motion comparison uses a 1e-7 epsilon and
+   its min send interval is an unimplemented TODO, so 2 ms sampling sent ~500
+   packets/s. One session: 941 ENOBUFS, 31 send-buffer overflows, then
+   "Connection refused" and 7605 EBADF, 1744 log lines dropped. Wi-Fi shares
+   airtime between up and down, so this degraded video as well as input. Fixed
+   by classing sends (buttons immediate, sticks thresholded, motion on cadence).
+2. **Gap-ack rejection (upstream).** `takion_handle_packet_message_data_ack`
+   rejected any ack with `buf_size != 0xc`, but the next check validates
+   `gap_ack_blocks_count * 4 + 0xc`. Acks carrying gap blocks are exactly the
+   ones sent during loss: 423 rejected in one session, so the send buffer never
+   drained when it mattered.
+3. **Reorder window mistuned (ours).** 2 ms classified routine Wi-Fi jitter as
+   loss; each instance cost an FEC failure plus an IDR round trip, far more
+   visible than the wait saved. Now runtime-tunable per profile.
+4. **Audio buffer sized like video (ours).** 10 ms setpoint produced 2556
+   underruns in a session. A late frame is invisible; a late audio buffer is
+   audible. Now 30 ms setpoint, 100 ms ceiling.
+5. **Present blocking the receive thread (ours).** `dkQueueAcquireImage` blocks
+   on the compositor; on the packet thread that made display stalls into
+   networking stalls. Now a newest-wins mailbox and a dedicated present thread.
+6. **Console/stdout crash (ours).** `consoleExit` frees the console framebuffer
+   without restoring stdout, so the first log line after leaving a menu wrote
+   into freed memory. The logger no longer touches stdio at all.
+
 ## Verify-on-hardware list (ordered)
 
 1. Zero-copy path: does averne's hwaccel wait for NVDEC completion before
