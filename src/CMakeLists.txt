@@ -7,7 +7,7 @@ set(ROMFS_DIR "${CMAKE_CURRENT_BINARY_DIR}/romfs")
 file(MAKE_DIRECTORY "${ROMFS_DIR}/shaders")
 
 set(SHADER_OUTPUTS "")
-foreach(shader video_vsh:vert video_fsh:frag)
+foreach(shader video_vsh:vert video_fsh:frag ui_vsh:vert ui_fsh:frag)
 	string(REPLACE ":" ";" parts "${shader}")
 	list(GET parts 0 name)
 	list(GET parts 1 stage)
@@ -37,11 +37,12 @@ add_executable(hayai
 	app/config.cpp
 	app/discovery.cpp
 	app/stream.cpp
-	app/ui.cpp)
+	app/ui.cpp
+	ui/draw.cpp)
 
 add_dependencies(hayai hayai_shaders)
 
-target_include_directories(hayai PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(hayai PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/vendor/stb")
 
 # Experiment knobs, applied to the vendored lib via #ifndef guards there.
 # Reorder timeout: FEC already covers intra-frame gaps; 2 ms guards only
@@ -88,6 +89,6 @@ hayai_add_nro(hayai
 	NAME hayai
 	TITLE "hayai"
 	AUTHOR "hayai contributors"
-	VERSION "0.3.0"
+	VERSION "0.4.0"
 	ICON "${HAYAI_ICON}"
 	ROMFS "${ROMFS_DIR}")

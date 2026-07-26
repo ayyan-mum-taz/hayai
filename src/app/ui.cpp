@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
+//
+// The frontend, rendered with deko3d through ui::Draw -- no text console and no
+// UI toolkit. It exists to start a session in as few presses as possible and
+// then get out of the way, so it is one live list of consoles plus a settings
+// screen.
 
 #include "app/ui.hpp"
 #include "app/stream.hpp"
 #include "core/log.hpp"
+#include "ui/draw.hpp"
+#include "util/time.hpp"
 
 #include <chiaki/base64.h>
 #include <chiaki/regist.h>
@@ -15,31 +22,20 @@
 
 namespace hayai::app {
 
+using ui::Color;
+using ui::Font;
+namespace theme = ui::theme;
+
 namespace {
 
 PadState g_pad;
 
-void console_begin()
+float lerp(float a, float b, float t)
 {
-	consoleInit(nullptr);
-	padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-	padInitializeDefault(&g_pad);
+	return a + (b - a) * t;
 }
 
-void console_end()
-{
-	// Note: consoleExit does not restore stdout, so nothing may printf after
-	// this point. The logger writes to a file/socket, never stdio.
-	consoleExit(nullptr);
-}
-
-uint64_t poll_buttons()
-{
-	padUpdate(&g_pad);
-	return padGetButtonsDown(&g_pad);
-}
-
-// Blocking software-keyboard text input. Returns false if canceled/empty.
+// Blocking software-keyboard input. Returns false if canceled or empty.
 bool keyboard_input(const char *guide, const char *initial, char *out, size_t out_size, bool numeric)
 {
 	SwkbdConfig kbd;
@@ -77,53 +73,121 @@ void regist_cb(ChiakiRegistEvent *event, void *user)
 		wait->done.store(-1, std::memory_order_release);
 }
 
-// One row of the live console list.
-struct MenuEntry
+struct Row
 {
 	enum class Kind
 	{
-		Registered,	// config host, streamable
-		Discovered,	// on the network but not registered yet
+		Registered,
+		Discovered,
 		RegisterIp,
 		Settings,
 	};
-	Kind kind;
-	std::string label;
-	std::string addr;	// for Registered/Discovered
+	Kind kind = Kind::Registered;
+	std::string title;
+	std::string subtitle;
+	std::string status;
+	Color status_color = theme::text_dim;
+	std::string addr;
 	bool standby = false;
 };
 
+constexpr float kMargin = 64.0f;
+constexpr float kRowH = 74.0f;
+constexpr float kRowGap = 12.0f;
+
 } // namespace
 
-void Ui::wait_any_button(const char *prompt)
+// ---------------------------------------------------------------- chrome ----
+
+void Ui::frame_begin()
 {
-	printf("\n%s\n", prompt);
-	consoleUpdate(nullptr);
+	draw_->begin();
+	draw_->gradient_v(0, 0, static_cast<float>(draw_->width()), static_cast<float>(draw_->height()),
+		theme::bg_top, theme::bg_bottom);
+}
+
+void Ui::draw_header(const char *title, const char *subtitle)
+{
+	draw_->text(kMargin, 36.0f, Font::Title, theme::text, title);
+	if(subtitle)
+		draw_->text(kMargin, 80.0f, Font::Small, theme::text_dim, subtitle);
+	draw_->rect(kMargin, 112.0f, static_cast<float>(draw_->width()) - kMargin * 2, 1.0f,
+		theme::text_dim.with_alpha(0.18f));
+}
+
+void Ui::draw_hints(const char *hints)
+{
+	const float y = static_cast<float>(draw_->height()) - 44.0f;
+	draw_->rect(kMargin, y - 14.0f, static_cast<float>(draw_->width()) - kMargin * 2, 1.0f,
+		theme::text_dim.with_alpha(0.18f));
+	draw_->text(kMargin, y, Font::Small, theme::text_dim, hints);
+}
+
+void Ui::frame_end()
+{
+	const int slot = presenter_->acquire();
+	draw_->end(slot);
+}
+
+void Ui::message(const char *title, const char *body)
+{
+	// Swallow the press that opened this, so it does not dismiss instantly.
+	padUpdate(&g_pad);
+
 	while(appletMainLoop())
 	{
-		if(poll_buttons())
+		padUpdate(&g_pad);
+		if(padGetButtonsDown(&g_pad))
 			break;
-		consoleUpdate(nullptr);
-		svcSleepThread(16'000'000ULL);
+
+		frame_begin();
+		draw_header("hayai", nullptr);
+
+		const float w = static_cast<float>(draw_->width()) - kMargin * 2;
+		const float y = 200.0f;
+		draw_->rounded_rect(kMargin, y, w, 176.0f, 16.0f, theme::card);
+		draw_->rect(kMargin, y + 14.0f, 3.0f, 148.0f, theme::accent);
+		draw_->text(kMargin + 28.0f, y + 26.0f, Font::Body, theme::text, title);
+
+		char buf[512];
+		snprintf(buf, sizeof(buf), "%s", body);
+		float ty = y + 74.0f;
+		char *line = buf;
+		while(line && *line)
+		{
+			char *nl = strchr(line, '\n');
+			if(nl)
+				*nl = '\0';
+			draw_->text(kMargin + 28.0f, ty, Font::Small, theme::text_dim, line);
+			ty += 26.0f;
+			line = nl ? nl + 1 : nullptr;
+		}
+
+		draw_hints("Any button   Continue");
+		frame_end();
 	}
 }
+
+// ------------------------------------------------------------- main menu ----
 
 Ui::MenuResult Ui::main_menu()
 {
 	int cursor = 0;
+	float cursor_anim = -1.0f;
 
 	while(appletMainLoop())
 	{
-		// Rebuild the merged list every frame from config + live discovery,
-		// the way the classic clients do it.
 		auto discovered = discovery_.hosts();
-		std::vector<MenuEntry> entries;
+		std::vector<Row> rows;
 
 		for(const auto &h : config_.hosts)
 		{
-			MenuEntry e;
-			e.kind = MenuEntry::Kind::Registered;
-			e.addr = h.addr;
+			Row r;
+			r.kind = Row::Kind::Registered;
+			r.addr = h.addr;
+			r.title = h.nickname.empty() ? h.addr : h.nickname;
+			r.subtitle = h.addr;
+
 			const DiscoveredHost *live = nullptr;
 			for(const auto &d : discovered)
 			{
@@ -133,59 +197,62 @@ Ui::MenuResult Ui::main_menu()
 					break;
 				}
 			}
-			const char *state = live ? (live->ready ? "ready" : "standby") : "not found";
-			e.standby = live && !live->ready;
-			e.label = h.nickname + "  " + h.addr + "  [" + state + "]";
-			entries.push_back(std::move(e));
+			if(!live)
+			{
+				r.status = "offline";
+				r.status_color = theme::text_dim;
+			}
+			else if(live->ready)
+			{
+				r.status = "ready";
+				r.status_color = theme::good;
+			}
+			else
+			{
+				r.status = "standby";
+				r.status_color = theme::warn;
+				r.standby = true;
+			}
+			rows.push_back(std::move(r));
 		}
+
 		for(const auto &d : discovered)
 		{
 			if(config_.find_host(d.addr))
 				continue;
-			MenuEntry e;
-			e.kind = MenuEntry::Kind::Discovered;
-			e.addr = d.addr;
-			e.standby = !d.ready;
-			e.label = d.name + "  " + d.addr + "  [" + (d.ready ? "ready" : "standby") +
-				(d.ps5 ? ", unregistered]" : ", not a PS5]");
-			entries.push_back(std::move(e));
-		}
-		{
-			MenuEntry e;
-			e.kind = MenuEntry::Kind::RegisterIp;
-			e.label = "Register by IP...";
-			entries.push_back(std::move(e));
-			e.kind = MenuEntry::Kind::Settings;
-			e.label = "Settings";
-			entries.push_back(std::move(e));
+			Row r;
+			r.kind = Row::Kind::Discovered;
+			r.addr = d.addr;
+			r.title = d.name.empty() ? d.addr : d.name;
+			r.subtitle = d.addr;
+			r.status = d.ps5 ? "not paired" : "not a PS5";
+			r.status_color = d.ps5 ? theme::accent : theme::bad;
+			r.standby = !d.ready;
+			rows.push_back(std::move(r));
 		}
 
-		const int count = static_cast<int>(entries.size());
+		{
+			Row r;
+			r.kind = Row::Kind::RegisterIp;
+			r.title = "Pair by IP address";
+			r.subtitle = "for a console discovery cannot see";
+			rows.push_back(r);
+
+			Row s;
+			s.kind = Row::Kind::Settings;
+			s.title = "Settings";
+			s.subtitle = config_.settings.profile_name();
+			rows.push_back(s);
+		}
+
+		const int count = static_cast<int>(rows.size());
 		if(cursor >= count)
 			cursor = count - 1;
+		if(cursor < 0)
+			cursor = 0;
 
-		consoleClear();
-		printf("hayai 0.3.0 - latency-first PS5 remote play\n");
-		if(appletGetAppletType() != AppletType_Application &&
-			appletGetAppletType() != AppletType_SystemApplication)
-			printf("!! applet mode: less memory, worse scheduling. Launch by holding R over a game.\n");
-		printf("\nConsoles (searching continuously...):\n\n");
-
-		for(int i = 0; i < count; i++)
-		{
-			const MenuEntry &e = entries[i];
-			if(i > 0 && e.kind == MenuEntry::Kind::RegisterIp &&
-				entries[i - 1].kind != MenuEntry::Kind::RegisterIp)
-				printf("\n");
-			printf(" %c %s\n", cursor == i ? '>' : ' ', e.label.c_str());
-		}
-
-		printf("\n A select (wakes standby consoles) | + exit\n");
-		printf(" In-stream: hold L+R+MINUS ~1s to quit.\n");
-		printf(" Log: /config/hayai/hayai.log\n");
-		consoleUpdate(nullptr);
-
-		const uint64_t down = poll_buttons();
+		padUpdate(&g_pad);
+		const uint64_t down = padGetButtonsDown(&g_pad);
 		if(down & HidNpadButton_Plus)
 			return MenuResult::Exit;
 		if(down & HidNpadButton_AnyDown)
@@ -194,79 +261,141 @@ Ui::MenuResult Ui::main_menu()
 			cursor = (cursor + count - 1) % count;
 		if(down & HidNpadButton_A)
 		{
-			MenuEntry &e = entries[cursor];
-			switch(e.kind)
+			Row &r = rows[cursor];
+			switch(r.kind)
 			{
-				case MenuEntry::Kind::Registered:
+				case Row::Kind::Registered:
 				{
-					HostEntry *host = config_.find_host(e.addr);
+					HostEntry *host = config_.find_host(r.addr);
 					if(!host)
 						break;
-					if(e.standby)
-					{
-						if(!wake_and_wait(*host))
-							break;
-					}
+					if(r.standby && !wake_and_wait(*host))
+						break;
 					selected_ = *host;
 					return MenuResult::Stream;
 				}
-				case MenuEntry::Kind::Discovered:
-				{
-					if(e.standby)
+				case Row::Kind::Discovered:
+					if(r.standby)
 					{
-						wait_any_button("Console must be fully on (not standby) to register.\nPress any button.");
+						message("Console is in standby",
+							"Turn it on fully to pair for the first time.\nOnce paired, hayai can wake it for you.");
 						break;
 					}
 					selected_ = {};
-					selected_.addr = e.addr;
-					selected_.nickname = e.addr;
+					selected_.addr = r.addr;
+					selected_.nickname = r.title;
 					register_host(selected_);
 					break;
-				}
-				case MenuEntry::Kind::RegisterIp:
+				case Row::Kind::RegisterIp:
 					register_menu();
 					break;
-				case MenuEntry::Kind::Settings:
+				case Row::Kind::Settings:
 					settings_menu();
 					break;
 			}
+			continue;
 		}
-		svcSleepThread(50'000'000ULL);	// 20 Hz menu; discovery updates at 2 Hz anyway
+
+		frame_begin();
+
+		char sub[192];
+		const bool applet = appletGetAppletType() != AppletType_Application &&
+			appletGetAppletType() != AppletType_SystemApplication;
+		snprintf(sub, sizeof(sub), "%s%s", config_.settings.profile_name(),
+			applet ? "     applet mode - hold R over a game for full performance" : "");
+		draw_header("hayai", sub);
+
+		const float x = kMargin;
+		const float w = static_cast<float>(draw_->width()) - kMargin * 2;
+		const float y0 = 144.0f;
+
+		const float target = y0 + cursor * (kRowH + kRowGap);
+		if(cursor_anim < 0.0f)
+			cursor_anim = target;
+		cursor_anim = lerp(cursor_anim, target, 0.35f);
+		draw_->rounded_rect(x - 6.0f, cursor_anim - 4.0f, w + 12.0f, kRowH + 8.0f, 18.0f, theme::accent_dim);
+
+		for(int i = 0; i < count; i++)
+		{
+			const Row &r = rows[i];
+			const float y = y0 + i * (kRowH + kRowGap);
+			if(y + kRowH > static_cast<float>(draw_->height()) - 76.0f)
+				break;
+
+			const bool sel = i == cursor;
+			draw_->rounded_rect(x, y, w, kRowH, 14.0f, sel ? theme::card.with_alpha(0.13f) : theme::card);
+			if(sel)
+				draw_->rect(x, y + 14.0f, 3.0f, kRowH - 28.0f, theme::accent);
+
+			draw_->text(x + 26.0f, y + 12.0f, Font::Body, theme::text, r.title.c_str());
+			draw_->text(x + 26.0f, y + 43.0f, Font::Small, theme::text_dim, r.subtitle.c_str());
+
+			if(!r.status.empty())
+			{
+				const float tw = draw_->text_width(Font::Small, r.status.c_str());
+				const float pw = tw + 28.0f;
+				const float px = x + w - pw - 20.0f;
+				draw_->rounded_rect(px, y + 22.0f, pw, 30.0f, 15.0f, r.status_color.with_alpha(0.16f));
+				draw_->text(px + 14.0f, y + 27.0f, Font::Small, r.status_color, r.status.c_str());
+			}
+		}
+
+		draw_hints("A  Select      +  Exit      during a stream: hold L+R+MINUS to quit");
+		frame_end();
 	}
 	return MenuResult::Exit;
 }
+
+// ------------------------------------------------------------- wake/pair ----
 
 bool Ui::wake_and_wait(const HostEntry &entry)
 {
 	if(!Discovery::wakeup(entry.addr, entry.rp_regist_key))
 	{
-		wait_any_button("Failed to send wakeup. Press any button.");
+		message("Wake failed", "Could not send the wake packet.");
 		return false;
 	}
 
-	const int max_wait_s = 40;
-	for(int elapsed_ds = 0; elapsed_ds < max_wait_s * 10 && appletMainLoop(); elapsed_ds++)
+	const uint64_t start = now_ns();
+	while(appletMainLoop())
 	{
-		auto discovered = discovery_.hosts();
-		for(const auto &d : discovered)
+		for(const auto &d : discovery_.hosts())
 		{
 			if(d.addr == entry.addr && d.ready)
 				return true;
 		}
-
-		if(elapsed_ds % 5 == 0)
+		const uint64_t elapsed = (now_ns() - start) / 1000000000ULL;
+		if(elapsed > 45)
 		{
-			consoleClear();
-			printf("Waking %s (%s)... %ds\n\n B cancel\n",
-				entry.nickname.c_str(), entry.addr.c_str(), elapsed_ds / 10);
-			consoleUpdate(nullptr);
-		}
-		if(poll_buttons() & HidNpadButton_B)
+			message("Console did not wake",
+				"No response after 45 seconds. Check that rest-mode\nnetworking is enabled on the console.");
 			return false;
-		svcSleepThread(100'000'000ULL);
-	}
+		}
 
-	wait_any_button("Console did not wake in time. Press any button.");
+		padUpdate(&g_pad);
+		if(padGetButtonsDown(&g_pad) & HidNpadButton_B)
+			return false;
+
+		frame_begin();
+		draw_header("hayai", nullptr);
+
+		const float w = static_cast<float>(draw_->width()) - kMargin * 2;
+		draw_->rounded_rect(kMargin, 220.0f, w, 140.0f, 16.0f, theme::card);
+
+		char line[128];
+		snprintf(line, sizeof(line), "Waking %s", entry.nickname.c_str());
+		draw_->text(kMargin + 28.0f, 246.0f, Font::Body, theme::text, line);
+		snprintf(line, sizeof(line), "%llu s", static_cast<unsigned long long>(elapsed));
+		draw_->text(kMargin + 28.0f, 284.0f, Font::Small, theme::text_dim, line);
+
+		const float t = static_cast<float>((now_ns() / 1000000ULL) % 1600) / 1600.0f;
+		const float bar_w = w - 56.0f;
+		draw_->rounded_rect(kMargin + 28.0f, 324.0f, bar_w, 4.0f, 2.0f, theme::text_dim.with_alpha(0.15f));
+		draw_->rounded_rect(kMargin + 28.0f + (bar_w - 140.0f) * t, 324.0f, 140.0f, 4.0f, 2.0f, theme::accent);
+
+		draw_hints("B  Cancel");
+		frame_end();
+	}
 	return false;
 }
 
@@ -283,11 +412,10 @@ void Ui::register_menu()
 
 void Ui::register_host(HostEntry &entry)
 {
-	// PSN account ID (base64, 8 bytes). Cached in settings after first use.
 	char account_b64[32];
 	if(config_.settings.psn_account_id_b64.empty())
 	{
-		if(!keyboard_input("PSN Account ID (base64, 12 chars)", "",
+		if(!keyboard_input("PSN Account ID (base64, 12 characters)", "",
 				account_b64, sizeof(account_b64), false))
 			return;
 		config_.settings.psn_account_id_b64 = account_b64;
@@ -301,11 +429,11 @@ void Ui::register_host(HostEntry &entry)
 		account_id_size != CHIAKI_PSN_ACCOUNT_ID_SIZE)
 	{
 		config_.settings.psn_account_id_b64.clear();
-		wait_any_button("Invalid account ID (must be 8 bytes of base64). Press any button.");
+		message("Invalid account ID",
+			"That is not a valid base64 PSN account ID.\nIt must decode to exactly 8 bytes.");
 		return;
 	}
 
-	// Console PIN from Settings > System > Remote Play > Link Device.
 	char pin_str[16];
 	if(!keyboard_input("PIN from PS5: Settings > System > Remote Play > Link Device", "",
 			pin_str, sizeof(pin_str), true))
@@ -323,18 +451,21 @@ void Ui::register_host(HostEntry &entry)
 	ChiakiRegist regist;
 	if(chiaki_regist_start(&regist, core::log().chiaki_log(), &info, &regist_cb, &wait) != CHIAKI_ERR_SUCCESS)
 	{
-		wait_any_button("Failed to start registration. Press any button.");
+		message("Pairing failed", "Could not start registration.");
 		return;
 	}
 
-	consoleClear();
-	printf("Registering with %s ...\n", entry.addr.c_str());
-	consoleUpdate(nullptr);
-
 	while(wait.done.load(std::memory_order_acquire) == 0 && appletMainLoop())
 	{
-		consoleUpdate(nullptr);
-		svcSleepThread(50'000'000ULL);
+		frame_begin();
+		draw_header("hayai", nullptr);
+		const float w = static_cast<float>(draw_->width()) - kMargin * 2;
+		draw_->rounded_rect(kMargin, 220.0f, w, 130.0f, 16.0f, theme::card);
+		char line[128];
+		snprintf(line, sizeof(line), "Pairing with %s", entry.addr.c_str());
+		draw_->text(kMargin + 28.0f, 248.0f, Font::Body, theme::text, line);
+		draw_->text(kMargin + 28.0f, 288.0f, Font::Small, theme::text_dim, "Talking to the console...");
+		frame_end();
 	}
 	chiaki_regist_stop(&regist);
 	chiaki_regist_fini(&regist);
@@ -348,116 +479,189 @@ void Ui::register_host(HostEntry &entry)
 		entry.registered = true;
 		config_.upsert_host(entry);
 		config_.save();
-		wait_any_button("Registered! Press any button.");
+		message("Paired", "The console is saved and ready to stream.");
 	}
 	else
-		wait_any_button("Registration failed (check PIN / account ID / console fully on).\nDetails: /config/hayai/hayai.log. Press any button.");
+		message("Pairing failed",
+			"Check the PIN, the account ID, and that the console is\nfully on. Details in /config/hayai/hayai.log");
 }
+
+// -------------------------------------------------------------- settings ----
 
 void Ui::settings_menu()
 {
 	Settings &s = config_.settings;
 	int cursor = 0;
-	constexpr int kItems = 6;
+	constexpr int kItems = 5;
+	float cursor_anim = -1.0f;
 
 	while(appletMainLoop())
 	{
-		consoleClear();
-		const char *res = s.res_name();
-		printf("Settings\n\n");
-		printf(" Session will request: %ux%u @ %u fps, %u kbps\n\n",
-			s.width(), s.height(), static_cast<unsigned>(s.fps), s.default_bitrate_kbps());
-		printf(" %c Resolution: %s%s\n", cursor == 0 ? '>' : ' ', res,
-			s.resolution == Res::R480 ? "  (848x480, non-standard)" : "");
-		printf(" %c FPS: %u\n", cursor == 1 ? '>' : ' ', static_cast<unsigned>(s.fps));
-		printf(" %c Profile: %s\n", cursor == 2 ? '>' : ' ', s.profile_name());
-		printf("     %s\n", s.profile == Profile::Latency
-			? "immediate present, 2 buffers, console holds quality"
-			: s.profile == Profile::Smooth
-				? "vsync + 3 buffers, honest congestion reports so the console eases off"
-				: "vsync + 3 buffers, console picks its highest bitrate");
-		printf(" %c Controller-only mode: %s\n", cursor == 3 ? '>' : ' ', s.controller_only ? "on" : "off");
-		printf(" %c   Backlight off while streaming: %s\n", cursor == 4 ? '>' : ' ', s.backlight_off ? "on" : "off");
-		printf(" %c Pin clocks during stream: %s\n", cursor == 5 ? '>' : ' ', s.pin_clocks ? "on" : "off");
-		printf("\n A change | B back (saves)\n");
-		consoleUpdate(nullptr);
-
-		const uint64_t down = poll_buttons();
+		padUpdate(&g_pad);
+		const uint64_t down = padGetButtonsDown(&g_pad);
 		if(down & HidNpadButton_B)
 			break;
 		if(down & HidNpadButton_AnyDown)
 			cursor = (cursor + 1) % kItems;
 		if(down & HidNpadButton_AnyUp)
 			cursor = (cursor + kItems - 1) % kItems;
-		if(down & HidNpadButton_A)
+		if(down & (HidNpadButton_A | HidNpadButton_AnyRight))
 		{
 			switch(cursor)
 			{
 				case 0:
+					s.profile = s.profile == Profile::Latency ? Profile::Smooth
+						: s.profile == Profile::Smooth ? Profile::Quality : Profile::Latency;
+					s.apply_profile_defaults();
+					break;
+				case 1:
 					switch(s.resolution)
 					{
-						case Res::R360: s.resolution = Res::R480; break;
-						case Res::R480: s.resolution = Res::R540; break;
+						case Res::R360: s.resolution = Res::R540; break;
 						case Res::R540: s.resolution = Res::R720; break;
 						case Res::R720: s.resolution = Res::R1080; break;
 						default: s.resolution = Res::R360; break;
 					}
-					s.bitrate = 0;	// follow the new resolution's default
-					break;
-				case 1:
-					s.fps = s.fps == CHIAKI_VIDEO_FPS_PRESET_60 ? CHIAKI_VIDEO_FPS_PRESET_30 : CHIAKI_VIDEO_FPS_PRESET_60;
+					s.bitrate = 0;
 					break;
 				case 2:
-					s.profile = s.profile == Profile::Latency ? Profile::Smooth
-						: s.profile == Profile::Smooth ? Profile::Quality : Profile::Latency;
-					s.apply_profile_defaults();
+					s.fps = s.fps == CHIAKI_VIDEO_FPS_PRESET_60 ? CHIAKI_VIDEO_FPS_PRESET_30
+						: CHIAKI_VIDEO_FPS_PRESET_60;
 					break;
 				case 3:
 					s.controller_only = !s.controller_only;
 					break;
 				case 4:
-					s.backlight_off = !s.backlight_off;
-					break;
-				case 5:
 					s.pin_clocks = !s.pin_clocks;
 					break;
 			}
 		}
-		svcSleepThread(16'000'000ULL);
+
+		frame_begin();
+
+		char sub[192];
+		snprintf(sub, sizeof(sub), "session will request  %ux%u at %u fps,  %u kbps",
+			s.width(), s.height(), static_cast<unsigned>(s.fps), s.default_bitrate_kbps());
+		draw_header("Settings", sub);
+
+		char fps_buf[16];
+		snprintf(fps_buf, sizeof(fps_buf), "%u", static_cast<unsigned>(s.fps));
+
+		struct Item
+		{
+			const char *label;
+			const char *value;
+			const char *note;
+		};
+		const Item items[kItems] = {
+			{ "Profile", s.profile_name(),
+				s.profile == Profile::Latency ? "immediate present, tightest reorder window"
+					: s.profile == Profile::Smooth
+						? "vsync, wider reorder window, honest congestion reports"
+						: "highest fidelity, assumes a strong network" },
+			{ "Resolution", s.res_name(), "lower resolutions leave more radio headroom" },
+			{ "Frame rate", fps_buf, "60 unless the link cannot sustain it" },
+			{ "Controller only", s.controller_only ? "on" : "off",
+				"no video at all - the Switch becomes a gamepad" },
+			{ "Pin clocks", s.pin_clocks ? "on" : "off",
+				"holds CPU and GPU steady so timing does not wander" },
+		};
+
+		const float x = kMargin;
+		const float w = static_cast<float>(draw_->width()) - kMargin * 2;
+		const float y0 = 144.0f;
+		const float rh = 66.0f;
+		const float gap = 8.0f;
+
+		const float target = y0 + cursor * (rh + gap);
+		if(cursor_anim < 0.0f)
+			cursor_anim = target;
+		cursor_anim = lerp(cursor_anim, target, 0.35f);
+		draw_->rounded_rect(x - 6.0f, cursor_anim - 4.0f, w + 12.0f, rh + 8.0f, 16.0f, theme::accent_dim);
+
+		for(int i = 0; i < kItems; i++)
+		{
+			const float y = y0 + i * (rh + gap);
+			const bool sel = i == cursor;
+			draw_->rounded_rect(x, y, w, rh, 12.0f, sel ? theme::card.with_alpha(0.13f) : theme::card);
+			draw_->text(x + 26.0f, y + 10.0f, Font::Body, theme::text, items[i].label);
+			draw_->text(x + 26.0f, y + 38.0f, Font::Small, theme::text_dim, items[i].note);
+
+			const float vw = draw_->text_width(Font::Body, items[i].value);
+			draw_->text(x + w - vw - 28.0f, y + 18.0f, Font::Body,
+				sel ? theme::accent : theme::text, items[i].value);
+		}
+
+		draw_hints("A / Right  Change      B  Back (saves)");
+		frame_end();
 	}
 	config_.save();
 }
 
+// ------------------------------------------------------------------- run ----
+
+bool Ui::gfx_up()
+{
+	presenter_ = new gfx::Presenter();
+	// Menus are vsync-paced: nothing to gain from tearing here, and a steady
+	// 60 Hz makes the cursor animation read as intentional.
+	if(!presenter_->create(1280, 720, gfx::Presenter::Mode::Vsync, 2))
+	{
+		HAYAI_LOGE("ui: presenter init failed");
+		return false;
+	}
+	draw_ = new ui::Draw();
+	if(!draw_->create(*presenter_))
+	{
+		HAYAI_LOGE("ui: draw init failed");
+		return false;
+	}
+	return true;
+}
+
+void Ui::gfx_down()
+{
+	delete draw_;
+	draw_ = nullptr;
+	delete presenter_;
+	presenter_ = nullptr;
+}
+
 void Ui::run()
 {
+	padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+	padInitializeDefault(&g_pad);
+
 	discovery_.start();
+	if(!gfx_up())
+	{
+		gfx_down();
+		return;
+	}
 
 	while(appletMainLoop())
 	{
-		console_begin();
 		const MenuResult result = main_menu();
-		console_end();
-
 		if(result == MenuResult::Exit)
 			break;
 
-		// Quiet the radio and free the discovery port while streaming; the
-		// console released the default framebuffer, the stream may take it.
+		// The stream wants its own swapchain shape, so hand the display over.
+		gfx_down();
 		discovery_.stop();
 
 		Stream stream;
 		const Stream::EndReason reason = stream.run(selected_, config_.settings);
 
 		discovery_.start();
+		if(!gfx_up())
+			break;
 
 		if(reason == Stream::EndReason::Error)
-		{
-			console_begin();
-			wait_any_button("Session ended with an error (see /config/hayai/hayai.log).\nPress any button.");
-			console_end();
-		}
+			message("Session ended with an error",
+				"See /config/hayai/hayai.log for the reason.");
 	}
 
+	gfx_down();
 	discovery_.stop();
 }
 

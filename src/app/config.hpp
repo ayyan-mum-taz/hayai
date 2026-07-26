@@ -41,14 +41,12 @@ enum class Profile
 	Quality,
 };
 
-// Stream resolutions. 480p is not one of the library's presets, but the launch
-// spec carries explicit width/height, so we can request it: 848x480 is a real
-// middle step (407k pixels) between 360p (230k) and 540p (518k), and both
-// dimensions are multiples of 16, which hardware encoders prefer.
+// Stream resolutions, all of them shapes the console advertises natively.
+// A custom 848x480 was tried and removed: non-standard geometry is a plausible
+// cause of the console declining to send video at all.
 enum class Res
 {
 	R360,
-	R480,
 	R540,
 	R720,
 	R1080,
@@ -88,7 +86,6 @@ struct Settings
 		switch(resolution)
 		{
 			case Res::R360: return 2000;
-			case Res::R480: return 4000;
 			case Res::R540: return 6000;
 			case Res::R1080: return 15000;
 			default: return 10000;
@@ -117,7 +114,6 @@ struct Settings
 		switch(resolution)
 		{
 			case Res::R360: return 640;
-			case Res::R480: return 848;
 			case Res::R540: return 960;
 			case Res::R1080: return 1920;
 			default: return 1280;
@@ -128,7 +124,6 @@ struct Settings
 		switch(resolution)
 		{
 			case Res::R360: return 360;
-			case Res::R480: return 480;
 			case Res::R540: return 540;
 			case Res::R1080: return 1080;
 			default: return 720;
@@ -139,7 +134,6 @@ struct Settings
 		switch(resolution)
 		{
 			case Res::R360: return "360p";
-			case Res::R480: return "480p";
 			case Res::R540: return "540p";
 			case Res::R1080: return "1080p";
 			default: return "720p";

@@ -38,13 +38,33 @@ public:
 	void set_rumble(uint8_t left, uint8_t right);
 
 private:
-	static constexpr uint64_t kCadenceNs = 2'000'000;	// 2 ms
+	// Sampling stays fast, but *sending* is rate-limited by event class.
+	//
+	// libchiaki treats any change as a reason to transmit, and its motion
+	// comparison uses a 1e-7 epsilon -- which gyro noise exceeds on every
+	// sample. Sampling at 2 ms therefore produced ~500 packets/s, which
+	// exhausted the socket buffers, overflowed the send buffer and eventually
+	// killed the session. Sends are now classed by what actually changed:
+	// buttons go out immediately (rare, and the thing players feel), stick
+	// motion is bounded, and motion-only updates ride a fixed cadence.
+	static constexpr uint64_t kCadenceNs = 2'000'000;	// sampling
+	static constexpr uint64_t kMinSendGapNs = 4'000'000;	// 250 Hz ceiling
+	static constexpr uint64_t kMotionIntervalNs = 8'000'000;	// 125 Hz motion
+	static constexpr int16_t kStickSendThreshold = 192;	// ignore analog noise
 	static constexpr uint64_t kQuitHoldNs = 1'000'000'000;
 
 	static void thread_entry(void *arg);
 	void thread_loop();
 	void sample(ChiakiControllerState *state);
+	// True when this state must go out now (buttons/triggers/touch) rather
+	// than waiting for the motion cadence.
+	bool is_discrete_change(const ChiakiControllerState &s) const;
 	void update_rumble();
+
+public:
+	uint64_t sends() const { return sends_.load(std::memory_order_relaxed); }
+
+private:
 
 	ChiakiSession *session_ = nullptr;
 	PadState pad_{};
@@ -58,6 +78,12 @@ private:
 
 	std::atomic<uint16_t> rumble_{ 0 };	// left<<8 | right
 	uint16_t rumble_applied_ = 0xFFFF;
+
+	// Send-decision state
+	ChiakiControllerState last_sent_{};
+	uint64_t last_send_ns_ = 0;
+	bool have_last_sent_ = false;
+	std::atomic<uint64_t> sends_{ 0 };
 
 	core::Worker worker_;
 	std::atomic<bool> stop_{ false };

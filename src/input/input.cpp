@@ -110,7 +110,42 @@ void Sampler::thread_loop()
 	{
 		chiaki_controller_state_set_idle(&state);
 		sample(&state);
-		chiaki_session_set_controller_state(session_, &state);
+
+		// Decide whether this sample is worth a packet. Sampling stays at 2 ms
+		// so whatever we do send is fresh; only the transmit rate is bounded.
+		const uint64_t t = now_ns();
+		const uint64_t since_send = t - last_send_ns_;
+		bool send = false;
+		if(!have_last_sent_)
+			send = true;
+		else if(is_discrete_change(state))
+			send = true;	// buttons/triggers/touch: immediate, this is what is felt
+		else
+		{
+			const int dlx = static_cast<int>(state.left_x) - last_sent_.left_x;
+			const int dly = static_cast<int>(state.left_y) - last_sent_.left_y;
+			const int drx = static_cast<int>(state.right_x) - last_sent_.right_x;
+			const int dry = static_cast<int>(state.right_y) - last_sent_.right_y;
+			const bool stick_moved =
+				dlx > kStickSendThreshold || dlx < -kStickSendThreshold ||
+				dly > kStickSendThreshold || dly < -kStickSendThreshold ||
+				drx > kStickSendThreshold || drx < -kStickSendThreshold ||
+				dry > kStickSendThreshold || dry < -kStickSendThreshold;
+			if(stick_moved || since_send >= kMotionIntervalNs)
+				send = true;
+		}
+		// Hard ceiling regardless of cause, so analog noise can never flood.
+		if(send && have_last_sent_ && since_send < kMinSendGapNs)
+			send = false;
+
+		if(send)
+		{
+			chiaki_session_set_controller_state(session_, &state);
+			last_sent_ = state;
+			last_send_ns_ = t;
+			have_last_sent_ = true;
+			sends_.fetch_add(1, std::memory_order_relaxed);
+		}
 		update_rumble();
 
 		// Absolute-time cadence: no drift, no ms-granular cond quantization.
@@ -122,7 +157,27 @@ void Sampler::thread_loop()
 			next = now;	// fell behind; don't burst
 	}
 
-	HAYAI_LOGI("input: sampler down");
+	HAYAI_LOGI("input: sampler down (%llu packets sent)",
+		static_cast<unsigned long long>(sends_.load(std::memory_order_relaxed)));
+}
+
+// Everything a player perceives as "did my press register": digital buttons,
+// analog triggers, touch. Deliberately excludes motion, which changes on every
+// sample from sensor noise alone.
+bool Sampler::is_discrete_change(const ChiakiControllerState &s) const
+{
+	if(s.buttons != last_sent_.buttons)
+		return true;
+	if(s.l2_state != last_sent_.l2_state || s.r2_state != last_sent_.r2_state)
+		return true;
+	for(int i = 0; i < CHIAKI_CONTROLLER_TOUCHES_MAX; i++)
+	{
+		if(s.touches[i].id != last_sent_.touches[i].id ||
+			s.touches[i].x != last_sent_.touches[i].x ||
+			s.touches[i].y != last_sent_.touches[i].y)
+			return true;
+	}
+	return false;
 }
 
 void Sampler::sample(ChiakiControllerState *state)

@@ -57,7 +57,12 @@ void RingLog::drain_loop()
 	FILE *f = fopen("/config/hayai/hayai.log", "w");
 	file_ = f;
 
-	char line[kSlotSize + 8];
+	char line[kSlotSize + 64];
+	// Collapse runs of identical messages. A dying socket can emit the same
+	// error thousands of times per second; without this it drowns the log,
+	// overflows the ring and costs real time on the producing thread.
+	char prev_text[kSlotSize] = { 0 };
+	uint64_t repeat = 0;
 
 	while(true)
 	{
@@ -66,8 +71,42 @@ void RingLog::drain_loop()
 		uint32_t state = slot.ready.load(std::memory_order_acquire);
 		if(state == 1)
 		{
-			const int len = snprintf(line, sizeof(line), "[%c] %s\n",
-				chiaki_log_level_char(slot.level), slot.text);
+			if(strcmp(slot.text, prev_text) == 0)
+			{
+				repeat++;
+				slot.ready.store(0, std::memory_order_release);
+				tail_++;
+				// Emit a marker occasionally so the log shows it is still going.
+				if((repeat % 500) != 0)
+					continue;
+			}
+			int len;
+			if(repeat && (repeat % 500) == 0)
+				len = snprintf(line, sizeof(line), "[%c] %s  (repeated %llu times)\n",
+					chiaki_log_level_char(slot.level), slot.text,
+					static_cast<unsigned long long>(repeat));
+			else
+			{
+				if(repeat)
+				{
+					const int rl = snprintf(line, sizeof(line),
+						"[.] last message repeated %llu times\n",
+						static_cast<unsigned long long>(repeat));
+					if(f && rl > 0)
+					{
+						fwrite(line, 1, static_cast<size_t>(rl), f);
+						fflush(f);
+					}
+					const int rfd = sink_fd_.load(std::memory_order_relaxed);
+					if(rfd >= 0 && rl > 0)
+						::write(rfd, line, static_cast<size_t>(rl));
+					repeat = 0;
+				}
+				strncpy(prev_text, slot.text, sizeof(prev_text) - 1);
+				prev_text[sizeof(prev_text) - 1] = '\0';
+				len = snprintf(line, sizeof(line), "[%c] %s\n",
+					chiaki_log_level_char(slot.level), slot.text);
+			}
 			slot.ready.store(0, std::memory_order_release);
 			tail_++;
 			drained_any = true;

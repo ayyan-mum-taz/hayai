@@ -326,7 +326,7 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 	else
 	{
 		// Built explicitly rather than via the preset helper: the launch spec
-		// carries width/height directly, which is what lets us offer 480p.
+		// carries width/height directly; all shapes here are natively advertised.
 		info.video_profile.width = settings_.width();
 		info.video_profile.height = settings_.height();
 		info.video_profile.max_fps = static_cast<unsigned>(settings_.fps);

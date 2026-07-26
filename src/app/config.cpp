@@ -140,8 +140,6 @@ bool Config::load()
 					settings.resolution = Res::R1080;
 				else if(strcmp(val, "540p") == 0)
 					settings.resolution = Res::R540;
-				else if(strcmp(val, "480p") == 0)
-					settings.resolution = Res::R480;
 				else if(strcmp(val, "360p") == 0)
 					settings.resolution = Res::R360;
 				else

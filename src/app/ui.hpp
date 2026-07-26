@@ -3,18 +3,20 @@
 
 #include "app/config.hpp"
 #include "app/discovery.hpp"
+#include "gfx/presenter.hpp"
+
+namespace hayai::ui { class Draw; }
 
 namespace hayai::app {
 
-// Text-mode frontend, structured like the classic Remote Play clients:
-// discovery runs continuously, and the main menu is a live list of consoles --
-// registered ones show their ready/standby state, unregistered ones found on
-// the network can be registered on the spot, standby consoles are woken
-// automatically on connect.
+// The frontend. Discovery runs continuously and the main screen is one live
+// list of consoles: paired ones show ready/standby/offline, unpaired ones found
+// on the network can be paired in place, and a standby console is woken
+// automatically when selected.
 //
-// Deliberately libnx console, not a UI toolkit: the console owns the default
-// framebuffer only while menus are visible; it is torn down before a stream
-// brings up deko3d, so nothing UI-related exists while streaming.
+// Rendered with deko3d via ui::Draw rather than a UI toolkit, so the streaming
+// path never shares a frame pacer with a widget library. The UI releases the
+// display entirely for the duration of a stream.
 class Ui
 {
 public:
@@ -37,10 +39,22 @@ private:
 	// if the user canceled or the console never woke.
 	bool wake_and_wait(const HostEntry &entry);
 	void settings_menu();
-	void wait_any_button(const char *prompt);
+
+	// Graphics are owned by the UI and handed to the stream for its duration,
+	// because the two want different swapchain shapes.
+	bool gfx_up();
+	void gfx_down();
+
+	void frame_begin();
+	void frame_end();
+	void draw_header(const char *title, const char *subtitle);
+	void draw_hints(const char *hints);
+	void message(const char *title, const char *body);
 
 	Config &config_;
 	Discovery discovery_;
+	gfx::Presenter *presenter_ = nullptr;
+	ui::Draw *draw_ = nullptr;
 	HostEntry selected_{};
 };
 
