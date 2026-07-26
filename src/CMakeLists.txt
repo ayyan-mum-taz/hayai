@@ -76,10 +76,18 @@ target_link_libraries(hayai PRIVATE
 
 target_compile_options(hayai PRIVATE -Wall -Wno-unused-variable)
 
+# assets/icon.local.jpg (gitignored) overrides the shipped icon, so a personal
+# build can use artwork that should not be redistributed.
+set(HAYAI_ICON "${CMAKE_SOURCE_DIR}/assets/icon.jpg")
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/icon.local.jpg")
+	set(HAYAI_ICON "${CMAKE_SOURCE_DIR}/assets/icon.local.jpg")
+	message(STATUS "using local icon override: assets/icon.local.jpg")
+endif()
+
 hayai_add_nro(hayai
 	NAME hayai
 	TITLE "hayai"
 	AUTHOR "hayai contributors"
 	VERSION "0.1.1"
-	ICON "${CMAKE_SOURCE_DIR}/assets/icon.jpg"
+	ICON "${HAYAI_ICON}"
 	ROMFS "${ROMFS_DIR}")

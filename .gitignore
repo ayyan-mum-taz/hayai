@@ -4,3 +4,4 @@ build_*/
 *.nacp
 *.elf
 .DS_Store
+assets/icon.local.jpg
