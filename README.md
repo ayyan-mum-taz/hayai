@@ -10,7 +10,7 @@ datagram. Every layer — network, decode, present, input, audio — is designed
 for that goal, and instrumented so the claims below are measurable on the
 device rather than asserted.
 
-## Three things measurement caught that reading could not
+## 0.4.0 patched issues seen in live testing
 
 Instrumentation earned its place immediately. Each of these was invisible in
 normal use and obvious in the numbers:
