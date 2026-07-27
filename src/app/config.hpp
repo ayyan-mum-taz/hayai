@@ -102,11 +102,24 @@ struct Settings
 		}
 	}
 
+	// 30 fps only pays off if the bitrate comes down with it.
+	//
+	// At a fixed bitrate, halving the frame rate doubles the bytes in every
+	// frame: each frame then takes twice as long to serialize and carries twice
+	// as many packets, so it is twice as likely to lose one -- and a loss now
+	// costs a 33 ms hole instead of 16 ms. That is why 30 fps "does nothing".
+	// Halving the bitrate alongside it keeps frames exactly the same size as at
+	// 60, while the radio carries half as many per second. That is the real
+	// consistency win: same per-frame risk, half the airtime, half the chances
+	// to lose anything. The cost is honest and bounded -- one extra frame
+	// interval of sampling latency, and less fluid motion.
 	uint32_t default_bitrate_kbps() const
 	{
 		if(bitrate)
 			return bitrate;
-		const uint32_t base = res_bitrate_kbps();
+		uint32_t base = res_bitrate_kbps();
+		if(fps == CHIAKI_VIDEO_FPS_PRESET_30)
+			base /= 2;
 		switch(profile)
 		{
 			// Deliberate headroom below what the radio can carry. Smaller
@@ -116,7 +129,7 @@ struct Settings
 			// Three quarters, not two thirds: a chunk of the headroom that
 			// margin was protecting existed only because our own input flood
 			// was stealing Wi-Fi airtime from the video coming back.
-			case Profile::Smooth: return base * 3 / 4;
+			case Profile::Smooth: return base * 2 / 3;
 			case Profile::Quality: return base;
 			default: return base;
 		}

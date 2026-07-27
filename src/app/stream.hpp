@@ -52,6 +52,8 @@ private:
 
 	void present_loop();
 	bool setup_video();
+	// Idempotent; every exit path from run() goes through it.
+	void teardown_video();
 
 	Settings settings_{};
 	ChiakiSession session_{};

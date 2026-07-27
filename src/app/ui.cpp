@@ -495,7 +495,7 @@ void Ui::settings_menu()
 	constexpr int kItems = 6;
 	// A short ladder rather than a slider: every value here is one someone
 	// would actually pick, and "auto" follows the profile and resolution.
-	static constexpr uint32_t kBitrates[] = { 0, 4000, 6300, 8000, 10000, 12000, 15000 };
+	static constexpr uint32_t kBitrates[] = { 0, 4000, 5200, 6300, 8000, 10000, 12000, 15000 };
 	float cursor_anim = -1.0f;
 
 	while(appletMainLoop())
@@ -583,8 +583,8 @@ void Ui::settings_menu()
 						: "highest fidelity, assumes a strong network" },
 			{ "Resolution", s.res_name(), "lower resolutions leave more radio headroom" },
 			{ "Frame rate", fps_buf, s.fps == CHIAKI_VIDEO_FPS_PRESET_30
-				? "halves the radio load per second, but each frame doubles in size"
-				: "60 is both smoother and lower latency; only drop if forced" },
+				? "consistency mode: auto-halves bitrate, so frames stay small"
+				: "60 is smoother and lower latency; 30 trades both for stability" },
 			{ "Bitrate", rate_buf,
 				"lower is often smoother - clean delivery beats sharp but hitching" },
 			{ "Controller only", s.controller_only ? "on" : "off",
@@ -675,8 +675,13 @@ void Ui::run()
 		gfx_down();
 		discovery_.stop();
 
-		Stream stream;
-		const Stream::EndReason reason = stream.run(selected_, config_.settings);
+		Stream::EndReason reason;
+		{
+			// Scoped so the stream -- and any graphics it still owns -- is fully
+			// destroyed before the UI creates its own swapchain on the same window.
+			Stream stream;
+			reason = stream.run(selected_, config_.settings);
+		}
 
 		discovery_.start();
 		if(!gfx_up())

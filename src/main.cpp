@@ -62,7 +62,7 @@ int main(int argc, char *argv[])
 	hayai::core::install_chiaki_affinity_hook();
 
 	chiaki_lib_init();
-	HAYAI_LOGI("hayai 0.6.0 starting");
+	HAYAI_LOGI("hayai 0.7.0 starting");
 
 	hayai::app::Config config;
 	if(!config.load())

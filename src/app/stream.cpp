@@ -266,6 +266,34 @@ void Stream::present_loop()
 		static_cast<unsigned long long>(frames_dropped_.load(std::memory_order_relaxed)));
 }
 
+// Idempotent, and called on every exit from run(). The swapchain lives on the
+// console's one and only NWindow, so leaving it alive after an early return
+// meant the UI would later create a *second* swapchain on the same window --
+// deko3d then raised on acquireImage and the process broke. That is precisely
+// how the error dialog itself crashed.
+void Stream::teardown_video()
+{
+	present_stop_.store(true, std::memory_order_relaxed);
+	if(mailbox_frame_)
+	{
+		mutexLock(&mailbox_mutex_);
+		condvarWakeAll(&mailbox_cond_);
+		mutexUnlock(&mailbox_mutex_);
+	}
+	present_thread_.join();
+
+	if(mailbox_frame_)
+	{
+		av_frame_free(&mailbox_frame_);
+		mailbox_full_ = false;
+	}
+
+	renderer_.destroy();
+	decoder_.destroy();
+	presenter_.destroy();
+	video_up_ = false;
+}
+
 bool Stream::setup_video()
 {
 	// Breadcrumbs: each stage logs before it runs, and the log is flushed per
@@ -375,6 +403,7 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 		if(!setup_video())
 		{
 			chiaki_session_fini(&session_);
+			teardown_video();
 			return EndReason::Error;
 		}
 		chiaki_session_set_video_sample_cb(&session_, &Stream::video_cb, this);
@@ -462,17 +491,7 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 	vsync_stop_.store(true, std::memory_order_relaxed);
 	vsync_watcher_.join();
 
-	// No more callbacks can publish frames now; drain the mailbox and stop.
-	present_stop_.store(true, std::memory_order_relaxed);
-	mutexLock(&mailbox_mutex_);
-	condvarWakeAll(&mailbox_cond_);
-	mutexUnlock(&mailbox_mutex_);
-	present_thread_.join();
-	if(mailbox_frame_)
-	{
-		av_frame_free(&mailbox_frame_);
-		mailbox_full_ = false;
-	}
+	// No more callbacks can publish frames now.
 
 	if(backlight_off)
 	{
@@ -481,10 +500,7 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 	}
 	clocks.unpin();
 
-	renderer_.destroy();
-	decoder_.destroy();
-	presenter_.destroy();
-	video_up_ = false;
+	teardown_video();
 
 	return failed_.load(std::memory_order_relaxed) ? EndReason::Error : EndReason::Quit;
 }
