@@ -89,6 +89,6 @@ hayai_add_nro(hayai
 	NAME hayai
 	TITLE "hayai"
 	AUTHOR "hayai contributors"
-	VERSION "0.5.0"
+	VERSION "0.6.0"
 	ICON "${HAYAI_ICON}"
 	ROMFS "${ROMFS_DIR}")

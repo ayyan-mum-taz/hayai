@@ -492,7 +492,10 @@ void Ui::settings_menu()
 {
 	Settings &s = config_.settings;
 	int cursor = 0;
-	constexpr int kItems = 5;
+	constexpr int kItems = 6;
+	// A short ladder rather than a slider: every value here is one someone
+	// would actually pick, and "auto" follows the profile and resolution.
+	static constexpr uint32_t kBitrates[] = { 0, 4000, 6300, 8000, 10000, 12000, 15000 };
 	float cursor_anim = -1.0f;
 
 	while(appletMainLoop())
@@ -529,9 +532,23 @@ void Ui::settings_menu()
 						: CHIAKI_VIDEO_FPS_PRESET_60;
 					break;
 				case 3:
+				{
+					size_t bi = 0;
+					for(size_t i = 0; i < sizeof(kBitrates) / sizeof(kBitrates[0]); i++)
+					{
+						if(kBitrates[i] == s.bitrate)
+						{
+							bi = i;
+							break;
+						}
+					}
+					s.bitrate = kBitrates[(bi + 1) % (sizeof(kBitrates) / sizeof(kBitrates[0]))];
+					break;
+				}
+				case 4:
 					s.controller_only = !s.controller_only;
 					break;
-				case 4:
+				case 5:
 					s.pin_clocks = !s.pin_clocks;
 					break;
 			}
@@ -546,6 +563,11 @@ void Ui::settings_menu()
 
 		char fps_buf[16];
 		snprintf(fps_buf, sizeof(fps_buf), "%u", static_cast<unsigned>(s.fps));
+		char rate_buf[32];
+		if(s.bitrate)
+			snprintf(rate_buf, sizeof(rate_buf), "%u kbps", s.bitrate);
+		else
+			snprintf(rate_buf, sizeof(rate_buf), "auto (%u)", s.default_bitrate_kbps());
 
 		struct Item
 		{
@@ -561,8 +583,10 @@ void Ui::settings_menu()
 						: "highest fidelity, assumes a strong network" },
 			{ "Resolution", s.res_name(), "lower resolutions leave more radio headroom" },
 			{ "Frame rate", fps_buf, s.fps == CHIAKI_VIDEO_FPS_PRESET_30
-				? "halves frame rate but doubles frame size - costs latency"
+				? "halves the radio load per second, but each frame doubles in size"
 				: "60 is both smoother and lower latency; only drop if forced" },
+			{ "Bitrate", rate_buf,
+				"lower is often smoother - clean delivery beats sharp but hitching" },
 			{ "Controller only", s.controller_only ? "on" : "off",
 				"no video at all - the Switch becomes a gamepad" },
 			{ "Pin clocks", s.pin_clocks ? "on" : "off",

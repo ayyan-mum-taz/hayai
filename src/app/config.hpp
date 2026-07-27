@@ -68,16 +68,17 @@ struct Settings
 	// --- derived from profile ---
 	bool vsync() const { return profile != Profile::Latency; }
 
-	// Always two. With vsync, a swapchain of N images lets N-1 frames sit
-	// queued ahead of the panel, and each queued frame costs a full refresh --
-	// so three images is a permanent extra ~16 ms for nothing. The third image
-	// would only help if we were late producing frames, but decode is ~1 ms and
-	// the draw ~0.2 ms; lateness comes from the network, which a deeper
-	// swapchain cannot fix (the newest-wins mailbox already absorbs it).
-	// Two images plus the mailbox means: at every vblank, show the newest frame
-	// that exists. That is simultaneously the smoothest and the lowest-latency
-	// behaviour available.
-	unsigned swapchain_images() const { return 2; }
+	// Latency: two images, immediate present -- acquire never blocks, frames go
+	// out the moment they exist. Smooth/Quality: three, and this is measured,
+	// not theorised. We shipped vsync with two images once: the present thread
+	// then blocks until vblank, so each frame's on-screen fate depends on its
+	// arrival phase against the panel clock, and since the console's encoder
+	// clock free-runs against the panel, that phase drifts through the beat
+	// cycle -- telemetry showed present times oscillating 2 ms -> 11 ms -> 2 ms
+	// over the minutes, which the eye reads as periodic repeat/skip judder.
+	// The third image is the shock absorber for that beat: it costs up to one
+	// frame of queueing and buys even pacing, which is exactly Smooth's trade.
+	unsigned swapchain_images() const { return profile == Profile::Latency ? 2 : 3; }
 	// Ceiling on the packet loss we report. libchiaki clamps to this, so a low
 	// value hides congestion from the console; Smooth reports it honestly.
 	double packet_loss_max() const

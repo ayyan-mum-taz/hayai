@@ -229,6 +229,31 @@ void Pipeline::thread_loop()
 				(drop + fifo_count) / 48, drop / 48);
 		}
 
+		// If a network stall left the FIFO short, ask Opus for packet-loss
+		// concealment frames instead of playing silence. PLC extrapolates the
+		// last audio's spectrum, which the ear reads as a brief blur rather
+		// than the hard click of a gap. Only once real audio has flowed, and
+		// bounded so a long outage still decays to quiet.
+		if(opus_ && pkt_tail_ > 0)
+		{
+			unsigned plc_frames = 0;
+			while(fifo_count < kOutSamples && plc_frames < 3)
+			{
+				const int got_plc = opus_decode(opus_, nullptr, 0, decode_buf,
+					static_cast<int>(kOutSamples), 0);
+				if(got_plc <= 0)
+					break;
+				uint8_t *outp[1] = { reinterpret_cast<uint8_t *>(fifo + fifo_count * kMaxChannels) };
+				const uint8_t *inp[1] = { reinterpret_cast<const uint8_t *>(decode_buf) };
+				const int room = static_cast<int>(kFifoCapacity - fifo_count);
+				const int got = swr_convert(swr_, outp, room, inp, got_plc);
+				if(got <= 0)
+					break;
+				fifo_count += static_cast<unsigned>(got);
+				plc_frames++;
+			}
+		}
+
 		// Feed any released device buffers.
 		AudioOutBuffer *released = nullptr;
 		u32 released_count = 0;
