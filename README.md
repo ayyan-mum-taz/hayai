@@ -10,7 +10,7 @@ datagram. Every layer — network, decode, present, input, audio — is designed
 for that goal, and instrumented so the claims below are measurable on the
 device rather than asserted.
 
-## New 0.4.0 release patches issues seen in live testing
+## What live testing found
 
 Instrumentation earned its place immediately. Each of these was invisible in
 normal use and obvious in the numbers:
@@ -51,10 +51,15 @@ display stall into a networking stall. So decoded frames go to a **newest-wins
 mailbox** and a dedicated thread presents them. A frame still waiting when the
 next one decodes is dropped, never shown late.
 
-**Present on decode, not on a schedule.** In the latency profile a finished
-frame goes to the display the moment it exists, through a two-image swapchain
-in immediate mode — it never waits for a render loop's next tick. Vsync with a
-deeper swapchain is a profile choice, not a compile-time one.
+**Two swapchain images, always.** With vsync, a swapchain of N images lets N-1
+frames sit queued ahead of the panel, and each queued frame costs a full
+refresh — so a third image is a permanent extra ~16 ms. It would only help if
+we were slow producing frames, but decode is ~1 ms and the draw ~0.2 ms;
+lateness comes from the network, which no amount of swapchain depth can fix.
+Two images plus the newest-wins mailbox means *at every vblank, show the newest
+frame that exists* — simultaneously the smoothest and the lowest-latency
+behaviour available, which is why the vsync profiles cost almost nothing
+against the immediate one.
 
 **Input is classed by what a player can feel.** A dedicated thread samples
 buttons, sticks, gyro and touch every 2 ms, so whatever is transmitted is
@@ -85,9 +90,13 @@ countermeasure:
 - Head-of-line waiting for out-of-order packets is tuned per profile (2.5 ms
   to 10 ms) rather than the fixed ~16 ms that is customary — long enough to
   use a late packet, short enough that a lost one does not stall the pipeline.
-- CPU and GPU clocks are pinned for the session's duration, because a
-  mostly-idle GPU gets downclocked by the governor and a "cheap" render pass
-  quietly stops being cheap.
+- CPU and GPU clocks are held up for the session, because a mostly-idle GPU
+  gets downclocked by the governor and a "cheap" render pass quietly stops
+  being cheap. hayai reads the rate already in effect and only ever *raises*
+  it, so a console managed by sys-clk is never quietly slowed down mid-session.
+- The video shader dithers by slightly under one 8-bit step. The stream is
+  8-bit and resolves to an 8-bit surface, so gradients band — worst at lower
+  stream resolutions, where each source pixel covers more panel.
 
 **It measures itself.** Per-frame timestamps at every stage produce p50/p99
 summaries on-device — including the phase between frame arrival and the
@@ -105,8 +114,8 @@ up in an incoherent state.
 | | Latency | Smooth | Quality |
 |---|---|---|---|
 | Resolution | 720p | 540p | 1080p |
-| Bitrate | full | two thirds | full |
-| Present | immediate, 2 buffers | vsync, 3 buffers | vsync, 3 buffers |
+| Bitrate | full | three quarters | full |
+| Present | immediate, 2 buffers | vsync, 2 buffers | vsync, 2 buffers |
 | Reorder window | 2.5 ms | 10 ms | 6 ms |
 | Loss reported to console | capped 10% | honest, to 30% | capped 5% |
 
