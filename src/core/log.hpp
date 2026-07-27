@@ -37,6 +37,12 @@ public:
 	// Writing to a socket fd (or the log file) avoids stdio completely.
 	void set_sink_fd(int fd) { sink_fd_.store(fd, std::memory_order_relaxed); }
 
+	// While a stream is running, lines are held in RAM and nothing touches the
+	// SD card. Diagnostics are kept in full; they are simply written out when
+	// the stream ends. Storage I/O during play is a variance source we do not
+	// need to pay for.
+	void set_deferred(bool deferred);
+
 	void write(ChiakiLogLevel level, const char *msg);
 
 	// ChiakiLog glue: chiaki_log_init(&log, mask, RingLog::chiaki_cb, &ring)
@@ -65,6 +71,10 @@ private:
 	std::atomic<int> sink_fd_{ -1 };
 	void *thread_ = nullptr;	// Thread* (kept opaque to avoid switch.h here)
 	void *file_ = nullptr;		// FILE* (drain thread only)
+	std::atomic<bool> deferred_{ false };
+	char *defer_buf_ = nullptr;	// drain thread only
+	size_t defer_used_ = 0;
+	uint64_t defer_dropped_ = 0;
 	ChiakiLog chiaki_log_{};
 };
 

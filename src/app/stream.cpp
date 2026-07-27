@@ -404,6 +404,7 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 		{
 			chiaki_session_fini(&session_);
 			teardown_video();
+			core::log().set_deferred(false);
 			return EndReason::Error;
 		}
 		chiaki_session_set_video_sample_cb(&session_, &Stream::video_cb, this);
@@ -436,6 +437,9 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 		if(R_SUCCEEDED(lblInitialize()))
 			lblSwitchBacklightOff(500'000'000ULL);
 	}
+
+	// No storage I/O for the duration of the stream.
+	core::log().set_deferred(true);
 
 	HAYAI_LOGI("stream: starting session (handshake)");
 	err = chiaki_session_start(&session_);
@@ -501,6 +505,7 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 	clocks.unpin();
 
 	teardown_video();
+	core::log().set_deferred(false);
 
 	return failed_.load(std::memory_order_relaxed) ? EndReason::Error : EndReason::Quit;
 }

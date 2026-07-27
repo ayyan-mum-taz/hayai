@@ -10,9 +10,10 @@ namespace hayai::core {
 // Core assignments. Horizon gives applications cores 0-2 preemptively;
 // core 3 belongs to the OS.
 //
-//   core 0: main/UI, discovery, logging, everything unimportant
+//   core 0: main/UI, discovery, log drain, input sampler
 //   core 1: takion receive thread = decode = present (the hot path, alone)
-//   core 2: audio, input sender, log drain
+//   core 2: audio pipeline, alone -- it has only tens of ms of hardware
+//           runway, so it must never round-robin with anything
 //
 // The point is that the hot path never shares a core with anything that could
 // preempt it -- and that measurements become repeatable.

@@ -75,9 +75,12 @@ bool Sampler::start(ChiakiSession *session)
 	memset(touch_map_, -1, sizeof(touch_map_));
 	memset(touch_finger_, 0xFF, sizeof(touch_finger_));
 
-	// 64 KB: this thread runs the Madgwick orientation filter and touch mapping
-	// each tick. Cheap insurance against the class of bug that took down audio.
-	return worker_.start(&Sampler::thread_entry, this, core::kPrioHot, core::kCoreAux, 0x10000);
+	// Core 0, not core 2. This thread wakes 500 times a second and does real
+	// work each time (motion filter, touch mapping), and at equal priority it
+	// was round-robining with the audio pipeline on the same core -- audio only
+	// has a few tens of milliseconds of hardware runway before it starves.
+	// Core 0 carries only the idle stream-wait and vsync watcher during play.
+	return worker_.start(&Sampler::thread_entry, this, core::kPrioHot, core::kCoreMain, 0x10000);
 }
 
 void Sampler::stop()

@@ -27,15 +27,17 @@ void affinity_cb(ChiakiThreadName name, void *user)
 			break;
 		case CHIAKI_THREAD_NAME_TAKION_SEND:
 		case CHIAKI_THREAD_NAME_FEEDBACK:
-			// Input leaves through these; keep them snappy but off the hot core.
-			core = kCoreAux;
+			// Input leaves through these; keep them snappy, but off both the hot
+			// core and the audio core. They live with the input sampler that
+			// feeds them.
+			core = kCoreMain;
 			prio = kPrioHot;
 			label = "takion-send/feedback";
 			break;
 		case CHIAKI_THREAD_NAME_GKCRYPT:
 			// Keystream precompute: must stay ahead of the stream but never
-			// preempt it.
-			core = kCoreAux;
+			// preempt it, and never share with audio.
+			core = kCoreMain;
 			prio = kPrioAux;
 			label = "gkcrypt";
 			break;

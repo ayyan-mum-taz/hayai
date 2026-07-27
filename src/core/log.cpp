@@ -12,6 +12,17 @@
 
 namespace hayai::core {
 
+namespace {
+// Enough for a long session's worth of diagnostics without ever touching
+// storage mid-stream.
+constexpr size_t kDeferBytes = 512 * 1024;
+} // namespace
+
+void RingLog::set_deferred(bool deferred)
+{
+	deferred_.store(deferred, std::memory_order_relaxed);
+}
+
 RingLog &log()
 {
 	static RingLog instance;
@@ -137,6 +148,18 @@ void RingLog::drain_loop()
 		else if(state == 2)
 		{
 			// Writer claimed it but hasn't finished; check again next round.
+		}
+
+		// A stream just ended: commit everything held in RAM.
+		if(!deferred_.load(std::memory_order_relaxed) && defer_used_ && f)
+		{
+			fwrite(defer_buf_, 1, defer_used_, f);
+			if(defer_dropped_)
+				fprintf(f, "[.] %llu log lines dropped while streaming\n",
+					static_cast<unsigned long long>(defer_dropped_));
+			fflush(f);
+			defer_used_ = 0;
+			defer_dropped_ = 0;
 		}
 
 		if(!drained_any)

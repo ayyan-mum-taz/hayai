@@ -41,10 +41,15 @@ private:
 	static constexpr unsigned kPacketSlots = 64;	// SPSC ring of encoded packets
 	static constexpr unsigned kPacketMax = 1024;	// opus frames are a few hundred bytes
 
-	// audout submit granularity. 480 samples = 10 ms per opus frame; we submit
-	// in the same units to keep the chain simple. 3 buffers in flight bounds
-	// device-side queueing at 20-30 ms worst case, ~15 typical.
-	static constexpr unsigned kOutSamples = 480;
+	// 20 ms per device buffer, three in flight -- 60 ms of hardware runway.
+	//
+	// This was 10 ms x 3 = 30 ms, and underruns accumulated at ~5/s even in
+	// windows where the network delivered a clean 60 fps with zero loss, which
+	// makes them ours rather than the link's. With only 30 ms of runway, any
+	// scheduling gap longer than that starves the device outright. Doubling the
+	// buffer both doubles the margin and halves this thread's wakeup rate,
+	// which matters because it shares a core with other work.
+	static constexpr unsigned kOutSamples = 960;
 	static constexpr unsigned kOutBuffers = 3;
 	// Audio needs a real jitter buffer, unlike video. A late video frame is an
 	// invisible 16 ms repeat; a late audio buffer is an audible click. Wi-Fi
