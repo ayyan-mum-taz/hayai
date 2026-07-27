@@ -54,6 +54,9 @@ void RingLog::drain_loop()
 	// crashes, which makes it the post-mortem channel for SD-card users.
 	mkdir("/config", 0755);
 	mkdir("/config/hayai", 0755);
+	// Keep one generation. Opening "w" alone meant that relaunching after a bad
+	// session destroyed the very log that explained it.
+	rename("/config/hayai/hayai.log", "/config/hayai/hayai.prev.log");
 	FILE *f = fopen("/config/hayai/hayai.log", "w");
 	file_ = f;
 

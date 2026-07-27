@@ -45,6 +45,7 @@ public:
 	// Called from anywhere (drain thread does the logging).
 	void log_summary();
 
+	void set_input_sends(uint64_t n) { input_sends_.store(n, std::memory_order_relaxed); }
 	void fec_failure() { fec_failures_.fetch_add(1, std::memory_order_relaxed); }
 	void frame_dropped() { frames_dropped_.fetch_add(1, std::memory_order_relaxed); }
 	void audio_underrun() { audio_underruns_.fetch_add(1, std::memory_order_relaxed); }
@@ -66,6 +67,8 @@ private:
 	std::atomic<uint64_t> audio_underruns_{ 0 };
 	std::atomic<uint64_t> frames_dropped_{ 0 };
 	std::atomic<uint64_t> fec_failures_{ 0 };
+	std::atomic<uint64_t> input_sends_{ 0 };
+	uint64_t input_sends_prev_ = 0;
 	std::atomic<int> audio_fill_ms_{ 0 };
 	std::atomic<int> audio_comp_ppm_{ 0 };
 };

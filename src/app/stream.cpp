@@ -13,10 +13,15 @@ namespace hayai::app {
 
 namespace {
 
-// Pin CPU/GPU clocks for the duration of the stream. Not an overclock: these
-// are the stock rates, held fixed so the DVFS governor cannot downclock a
-// mostly-idle GPU and stretch our tiny render pass (see docs/latency.md,
-// "DVFS trap"). Fails gracefully where clkrst is unavailable.
+// Hold CPU/GPU clocks up for the duration of the stream.
+//
+// This is not an overclock and it must never be a *downclock*. The DVFS
+// governor drops a mostly-idle GPU, which stretches our tiny render pass and
+// adds variance -- but plenty of people run sys-clk with the console pinned far
+// above stock, and naively setting stock rates here would slow those systems
+// down mid-session. So we read what is already in effect and only ever raise:
+// if the current rate meets or beats our floor, we leave the rail alone
+// entirely and never open a session on it.
 class ClockPin
 {
 public:
@@ -24,14 +29,14 @@ public:
 	{
 		if(R_FAILED(clkrstInitialize()))
 		{
-			HAYAI_LOGW("clocks: clkrst unavailable, not pinning");
+			HAYAI_LOGW("clocks: clkrst unavailable, leaving governor alone");
 			return;
 		}
 		up_ = true;
 
 		const bool docked = appletGetOperationMode() == AppletOperationMode_Console;
-		pin_one(PcvModuleId_CpuBus, 1020000000, "cpu");
-		pin_one(PcvModuleId_GPU, docked ? 768000000 : 460800000, "gpu");
+		raise_to(PcvModuleId_CpuBus, 1020000000, "cpu");
+		raise_to(PcvModuleId_GPU, docked ? 768000000 : 460800000, "gpu");
 	}
 
 	void unpin()
@@ -47,23 +52,34 @@ public:
 	}
 
 private:
-	void pin_one(PcvModuleId module, u32 hz, const char *name)
+	void raise_to(PcvModuleId module, u32 floor_hz, const char *name)
 	{
 		if(n_ >= 2)
 			return;
 		ClkrstSession *s = &sessions_[n_];
 		if(R_FAILED(clkrstOpenSession(s, module, 3)))
 		{
-			HAYAI_LOGW("clocks: open %s failed", name);
+			HAYAI_LOGW("clocks: cannot query %s, leaving it alone", name);
 			return;
 		}
-		if(R_FAILED(clkrstSetClockRate(s, hz)))
+
+		u32 current = 0;
+		if(R_SUCCEEDED(clkrstGetClockRate(s, &current)) && current >= floor_hz)
 		{
-			HAYAI_LOGW("clocks: pin %s @ %u MHz failed", name, hz / 1000000);
+			// Already at or above our floor -- almost certainly sys-clk or a
+			// similar manager. Close the session so we do not fight it.
+			HAYAI_LOGI("clocks: %s already at %u MHz, not touching it", name, current / 1000000);
 			clkrstCloseSession(s);
 			return;
 		}
-		HAYAI_LOGI("clocks: %s pinned @ %u MHz", name, hz / 1000000);
+
+		if(R_FAILED(clkrstSetClockRate(s, floor_hz)))
+		{
+			HAYAI_LOGW("clocks: raising %s to %u MHz failed", name, floor_hz / 1000000);
+			clkrstCloseSession(s);
+			return;
+		}
+		HAYAI_LOGI("clocks: %s raised %u -> %u MHz", name, current / 1000000, floor_hz / 1000000);
 		n_++;
 	}
 
@@ -418,6 +434,7 @@ Stream::EndReason Stream::run(const HostEntry &host, const Settings &settings)
 				break;
 			}
 		}
+		core::telemetry().set_input_sends(input_.sends());
 		if(input_.quit_requested())
 		{
 			HAYAI_LOGI("stream: quit chord");

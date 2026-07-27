@@ -32,10 +32,9 @@ enum class Profile
 	// Everything this project was built for. Immediate present, two swapchain
 	// images, congestion under-reported so the console holds quality.
 	Latency,
-	// Handheld-friendly. Vsync-paced with three images so a late frame does
-	// not become a visible hitch, and truthful loss reporting so the console
-	// actually drops its own bitrate when the radio is struggling instead of
-	// hammering a link that cannot carry it.
+	// Handheld-friendly. Vsync-paced so motion is evenly spaced, with truthful
+	// loss reporting so the console drops its own bitrate when the radio is
+	// struggling instead of hammering a link that cannot carry it.
 	Smooth,
 	// Highest fidelity the link will bear; assumes a good network.
 	Quality,
@@ -68,7 +67,17 @@ struct Settings
 
 	// --- derived from profile ---
 	bool vsync() const { return profile != Profile::Latency; }
-	unsigned swapchain_images() const { return profile == Profile::Latency ? 2 : 3; }
+
+	// Always two. With vsync, a swapchain of N images lets N-1 frames sit
+	// queued ahead of the panel, and each queued frame costs a full refresh --
+	// so three images is a permanent extra ~16 ms for nothing. The third image
+	// would only help if we were late producing frames, but decode is ~1 ms and
+	// the draw ~0.2 ms; lateness comes from the network, which a deeper
+	// swapchain cannot fix (the newest-wins mailbox already absorbs it).
+	// Two images plus the mailbox means: at every vblank, show the newest frame
+	// that exists. That is simultaneously the smoothest and the lowest-latency
+	// behaviour available.
+	unsigned swapchain_images() const { return 2; }
 	// Ceiling on the packet loss we report. libchiaki clamps to this, so a low
 	// value hides congestion from the console; Smooth reports it honestly.
 	double packet_loss_max() const
@@ -103,7 +112,10 @@ struct Settings
 			// frames serialize faster, so the last packet of each frame -- the
 			// one that gates decode -- arrives sooner, and there is slack left
 			// for retransmits when the link wobbles.
-			case Profile::Smooth: return base * 2 / 3;
+			// Three quarters, not two thirds: a chunk of the headroom that
+			// margin was protecting existed only because our own input flood
+			// was stealing Wi-Fi airtime from the video coming back.
+			case Profile::Smooth: return base * 3 / 4;
 			case Profile::Quality: return base;
 			default: return base;
 		}

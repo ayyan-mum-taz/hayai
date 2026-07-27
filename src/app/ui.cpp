@@ -560,7 +560,9 @@ void Ui::settings_menu()
 						? "vsync, wider reorder window, honest congestion reports"
 						: "highest fidelity, assumes a strong network" },
 			{ "Resolution", s.res_name(), "lower resolutions leave more radio headroom" },
-			{ "Frame rate", fps_buf, "60 unless the link cannot sustain it" },
+			{ "Frame rate", fps_buf, s.fps == CHIAKI_VIDEO_FPS_PRESET_30
+				? "halves frame rate but doubles frame size - costs latency"
+				: "60 is both smoother and lower latency; only drop if forced" },
 			{ "Controller only", s.controller_only ? "on" : "off",
 				"no video at all - the Switch becomes a gamepad" },
 			{ "Pin clocks", s.pin_clocks ? "on" : "off",

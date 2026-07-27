@@ -116,10 +116,17 @@ void Sampler::thread_loop()
 		const uint64_t t = now_ns();
 		const uint64_t since_send = t - last_send_ns_;
 		bool send = false;
+		bool discrete = false;
 		if(!have_last_sent_)
 			send = true;
 		else if(is_discrete_change(state))
-			send = true;	// buttons/triggers/touch: immediate, this is what is felt
+		{
+			// Buttons, triggers and touch: send at the full sampling rate. A
+			// human cannot generate these faster than a few dozen per second,
+			// so they cost nothing, and they are the events a player feels.
+			send = true;
+			discrete = true;
+		}
 		else
 		{
 			const int dlx = static_cast<int>(state.left_x) - last_sent_.left_x;
@@ -134,8 +141,9 @@ void Sampler::thread_loop()
 			if(stick_moved || since_send >= kMotionIntervalNs)
 				send = true;
 		}
-		// Hard ceiling regardless of cause, so analog noise can never flood.
-		if(send && have_last_sent_ && since_send < kMinSendGapNs)
+		// Ceiling for continuous signals only -- analog noise and motion can
+		// flood, discrete presses cannot.
+		if(send && !discrete && have_last_sent_ && since_send < kMinSendGapNs)
 			send = false;
 
 		if(send)

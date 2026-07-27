@@ -65,6 +65,7 @@ void Telemetry::log_summary()
 	if(now - summary_last_ns_ < 2'000'000'000ULL)
 		return;
 	summary_last_ns_ = now;
+	const uint64_t sends_now = input_sends_.load(std::memory_order_relaxed);
 
 	const uint64_t end = frame_count_.load(std::memory_order_relaxed);
 	uint64_t begin = summary_start_idx_;
@@ -110,18 +111,21 @@ void Telemetry::log_summary()
 	// judges, as opposed to how many frames arrived.
 	const double fps = n * 1e9 / static_cast<double>(now - (summary_last_ns_ - 2'000'000'000ULL));
 
-	HAYAI_LOGI("tl: %u frames %.1f fps | au->decoded %u.%03u/%u.%03u ms | au->presented %u.%03u/%u.%03u ms (p50/p99) | lost %u drop %llu fec %llu | phase %d%% | a_fill %d ms a_comp %d ppm a_under %llu | logdrop %llu",
+	HAYAI_LOGI("tl: %u frames %.1f fps | au->decoded %u.%03u/%u.%03u ms | au->presented %u.%03u/%u.%03u ms (p50/p99) | lost %u drop %llu fec %llu | in %llu/s | phase %d%% | a_fill %d ms a_comp %d ppm a_under %llu | logdrop %llu",
 		n, fps,
 		d50 / 1000, d50 % 1000, d99 / 1000, d99 % 1000,
 		t50 / 1000, t50 % 1000, t99 / 1000, t99 % 1000,
 		lost,
 		static_cast<unsigned long long>(frames_dropped_.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(fec_failures_.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>((input_sends_.load(std::memory_order_relaxed) - input_sends_prev_) / 2),
 		phase_pct,
 		audio_fill_ms_.load(std::memory_order_relaxed),
 		audio_comp_ppm_.load(std::memory_order_relaxed),
 		static_cast<unsigned long long>(audio_underruns_.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(log().dropped()));
+
+	input_sends_prev_ = sends_now;
 }
 
 } // namespace hayai::core
