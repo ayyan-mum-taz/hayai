@@ -185,6 +185,8 @@ void Ui::session_report(const core::Telemetry::Summary &s, bool errored)
 		verdict = "Link struggled. Try one step down the bitrate ladder.";
 	else if(fec_per_min >= 1.5)
 		verdict = "Occasional recovery stalls. A small bitrate drop would steady it.";
+	else if(s.avg_fps < 50.0 && s.frames_lost < 20 && s.fec_failures < 3)
+		verdict = "Console sent fewer frames than asked. Wi-Fi interference is the usual cause.";
 	else if(s.avg_fps >= 58.0 && s.fec_failures == 0)
 		verdict = "Clean throughout - there is headroom for more bitrate.";
 	else
@@ -227,6 +229,9 @@ void Ui::session_report(const core::Telemetry::Summary &s, bool errored)
 		snprintf(r, sizeof(r), "%s", l);
 		row("Network recovery", r,
 			s.fec_failures == 0 ? theme::good : fec_per_min >= 3.0 ? theme::bad : theme::warn);
+
+		snprintf(l, sizeof(l), "%llu frames lost", static_cast<unsigned long long>(s.frames_lost));
+		row("Link", l, s.frames_lost == 0 ? theme::good : s.frames_lost > 60 ? theme::bad : theme::warn);
 
 		snprintf(l, sizeof(l), "%llu gaps", static_cast<unsigned long long>(s.audio_underruns));
 		row("Audio", l, s.audio_underruns < 10 ? theme::good : theme::warn);

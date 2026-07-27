@@ -26,6 +26,7 @@ void Telemetry::start_session()
 	sess_present_us_.store(0, std::memory_order_relaxed);
 	sess_worst_us_.store(0, std::memory_order_relaxed);
 	sess_slow_.store(0, std::memory_order_relaxed);
+	sess_lost_.store(0, std::memory_order_relaxed);
 	sess_start_ns_ = now_ns();
 }
 
@@ -37,6 +38,8 @@ Telemetry::Frame &Telemetry::begin_frame(uint32_t au_size, uint32_t frames_lost)
 	f.au_complete_ns = now_ns();
 	f.au_size = au_size;
 	f.frames_lost = frames_lost;
+	if(frames_lost)
+		sess_lost_.fetch_add(frames_lost, std::memory_order_relaxed);
 	return f;
 }
 
@@ -72,6 +75,7 @@ Telemetry::Summary Telemetry::summary() const
 	s.fec_failures = fec_failures_.load(std::memory_order_relaxed);
 	s.frames_dropped = frames_dropped_.load(std::memory_order_relaxed);
 	s.audio_underruns = audio_underruns_.load(std::memory_order_relaxed);
+	s.frames_lost = sess_lost_.load(std::memory_order_relaxed);
 	return s;
 }
 

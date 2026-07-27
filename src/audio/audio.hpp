@@ -80,6 +80,9 @@ private:
 	SwrContext *swr_ = nullptr;
 	int comp_ppm_ = 0;
 
+	uint64_t backlog_trims_ = 0;
+	uint64_t last_backlog_log_ns_ = 0;
+
 	core::Worker worker_;
 	std::atomic<bool> stop_{ false };
 	std::atomic<bool> running_{ false };

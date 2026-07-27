@@ -225,8 +225,17 @@ void Pipeline::thread_loop()
 			memmove(fifo, fifo + drop * kMaxChannels,
 				(fifo_count - drop) * kMaxChannels * sizeof(int16_t));
 			fifo_count -= drop;
-			HAYAI_LOGW("audio: backlog %u ms exceeded bound, dropped %u ms",
-				(drop + fifo_count) / 48, drop / 48);
+			// Rate-limited: the millisecond figure differs every time, so the
+			// logger's repeat-collapsing cannot fold these, and a bad link
+			// produced hundreds of them.
+			backlog_trims_++;
+			const uint64_t now_log = armTicksToNs(armGetSystemTick());
+			if(now_log - last_backlog_log_ns_ > 5'000'000'000ULL)
+			{
+				HAYAI_LOGW("audio: trimmed backlog %llu times (last %u ms); the link is delivering audio in bursts",
+					static_cast<unsigned long long>(backlog_trims_), drop / 48);
+				last_backlog_log_ns_ = now_log;
+			}
 		}
 
 		// Recycle every buffer the device has finished with.

@@ -59,7 +59,7 @@ void RingLog::drain_loop()
 	// spare generation. Roll over only when the file gets genuinely large.
 	{
 		struct stat st{};
-		if(stat("/config/hayai/hayai.log", &st) == 0 && st.st_size > 2 * 1024 * 1024)
+		if(stat("/config/hayai/hayai.log", &st) == 0 && st.st_size > 512 * 1024)
 			rename("/config/hayai/hayai.log", "/config/hayai/hayai.prev.log");
 	}
 	FILE *f = fopen("/config/hayai/hayai.log", "a");
@@ -141,6 +141,8 @@ void RingLog::drain_loop()
 
 		if(!drained_any)
 		{
+			if(f)
+				fflush(f);
 			if(stop_.load(std::memory_order_relaxed))
 				break;
 			svcSleepThread(20'000'000ULL);	// 20 ms; logs are not latency-critical
@@ -159,9 +161,10 @@ bool RingLog::start()
 	chiaki_log_init(&chiaki_log_, CHIAKI_LOG_ALL & ~CHIAKI_LOG_VERBOSE, &RingLog::chiaki_cb, this);
 
 	static Thread thread;
-	// Priority 0x3B: below everything that matters. Core 2, away from the
-	// receive path on core 1.
-	Result rc = threadCreate(&thread, &RingLog::drain_entry, this, nullptr, 0x8000, 0x3B, 2);
+	// Priority 0x3B, core 0: below everything, and off core 2, which carries the
+	// audio pipeline and the input sampler. Log I/O has no business sharing a
+	// core with either.
+	Result rc = threadCreate(&thread, &RingLog::drain_entry, this, nullptr, 0x8000, 0x3B, 0);
 	if(R_FAILED(rc))
 		return false;
 	rc = threadStart(&thread);

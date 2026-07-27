@@ -43,6 +43,7 @@ public:
 		uint64_t fec_failures = 0;
 		uint64_t frames_dropped = 0;
 		uint64_t audio_underruns = 0;
+		uint64_t frames_lost = 0;
 	};
 	Summary summary() const;
 
@@ -88,6 +89,7 @@ private:
 	std::atomic<uint64_t> sess_present_us_{ 0 };
 	std::atomic<uint64_t> sess_worst_us_{ 0 };
 	std::atomic<uint64_t> sess_slow_{ 0 };
+	std::atomic<uint64_t> sess_lost_{ 0 };
 	uint64_t sess_start_ns_ = 0;
 	uint64_t input_sends_prev_ = 0;
 	std::atomic<int> audio_fill_ms_{ 0 };

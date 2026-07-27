@@ -79,17 +79,18 @@ struct Settings
 	// The third image is the shock absorber for that beat: it costs up to one
 	// frame of queueing and buys even pacing, which is exactly Smooth's trade.
 	unsigned swapchain_images() const { return profile == Profile::Latency ? 2 : 3; }
-	// Ceiling on the packet loss we report. libchiaki clamps to this, so a low
-	// value hides congestion from the console; Smooth reports it honestly.
-	double packet_loss_max() const
-	{
-		switch(profile)
-		{
-			case Profile::Smooth: return 0.30;
-			case Profile::Quality: return 0.05;
-			default: return 0.10;
-		}
-	}
+	// Ceiling on the packet loss we report to the console, which drives how
+	// hard it throttles its own encoder.
+	//
+	// This was 0.30 for Smooth on the theory that reporting honestly would let
+	// the console adapt properly. The logs killed that idea: a brief Wi-Fi
+	// stall measures as 90%+ loss over one 200 ms congestion interval, and
+	// reporting 30% of that makes the console cut all the way to ~24 fps and
+	// stay there long after the link recovered -- windows with zero lost
+	// packets and zero FEC failures were still only receiving 47 frames in two
+	// seconds. Upstream's default is 0.05 and the console's adaptation is tuned
+	// around clients that behave that way; transient spikes stay transient.
+	double packet_loss_max() const { return 0.05; }
 	// Base bitrate for the chosen resolution, before profile adjustment.
 	uint32_t res_bitrate_kbps() const
 	{
