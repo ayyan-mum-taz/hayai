@@ -31,6 +31,21 @@ public:
 		uint32_t frames_lost;
 	};
 
+	// Whole-session aggregate, for the report shown when a stream ends.
+	struct Summary
+	{
+		uint64_t frames = 0;
+		uint64_t duration_ms = 0;
+		double avg_fps = 0.0;
+		double avg_present_ms = 0.0;
+		double worst_present_ms = 0.0;
+		uint64_t slow_frames = 0;	// present took longer than a refresh
+		uint64_t fec_failures = 0;
+		uint64_t frames_dropped = 0;
+		uint64_t audio_underruns = 0;
+	};
+	Summary summary() const;
+
 	static constexpr unsigned kRing = 1024;
 
 	void start_session();
@@ -68,6 +83,12 @@ private:
 	std::atomic<uint64_t> frames_dropped_{ 0 };
 	std::atomic<uint64_t> fec_failures_{ 0 };
 	std::atomic<uint64_t> input_sends_{ 0 };
+	// Session accumulators (present thread writes, UI reads after the stream).
+	std::atomic<uint64_t> sess_frames_{ 0 };
+	std::atomic<uint64_t> sess_present_us_{ 0 };
+	std::atomic<uint64_t> sess_worst_us_{ 0 };
+	std::atomic<uint64_t> sess_slow_{ 0 };
+	uint64_t sess_start_ns_ = 0;
 	uint64_t input_sends_prev_ = 0;
 	std::atomic<int> audio_fill_ms_{ 0 };
 	std::atomic<int> audio_comp_ppm_{ 0 };

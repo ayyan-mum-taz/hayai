@@ -20,6 +20,13 @@ void Telemetry::start_session()
 	summary_start_idx_ = 0;
 	summary_last_ns_ = now_ns();
 	audio_underruns_.store(0, std::memory_order_relaxed);
+	fec_failures_.store(0, std::memory_order_relaxed);
+	frames_dropped_.store(0, std::memory_order_relaxed);
+	sess_frames_.store(0, std::memory_order_relaxed);
+	sess_present_us_.store(0, std::memory_order_relaxed);
+	sess_worst_us_.store(0, std::memory_order_relaxed);
+	sess_slow_.store(0, std::memory_order_relaxed);
+	sess_start_ns_ = now_ns();
 }
 
 Telemetry::Frame &Telemetry::begin_frame(uint32_t au_size, uint32_t frames_lost)
@@ -36,6 +43,36 @@ Telemetry::Frame &Telemetry::begin_frame(uint32_t au_size, uint32_t frames_lost)
 void Telemetry::end_frame(Frame &f)
 {
 	f.present_ns = now_ns();
+
+	if(f.present_ns > f.au_complete_ns)
+	{
+		const uint64_t us = (f.present_ns - f.au_complete_ns) / 1000;
+		sess_frames_.fetch_add(1, std::memory_order_relaxed);
+		sess_present_us_.fetch_add(us, std::memory_order_relaxed);
+		if(us > sess_worst_us_.load(std::memory_order_relaxed))
+			sess_worst_us_.store(us, std::memory_order_relaxed);
+		// A frame that took longer than one refresh to reach the screen is one
+		// the player had a chance of noticing.
+		if(us > 16667)
+			sess_slow_.fetch_add(1, std::memory_order_relaxed);
+	}
+}
+
+Telemetry::Summary Telemetry::summary() const
+{
+	Summary s;
+	s.frames = sess_frames_.load(std::memory_order_relaxed);
+	s.duration_ms = sess_start_ns_ ? (now_ns() - sess_start_ns_) / 1000000ULL : 0;
+	if(s.duration_ms)
+		s.avg_fps = s.frames * 1000.0 / static_cast<double>(s.duration_ms);
+	if(s.frames)
+		s.avg_present_ms = (sess_present_us_.load(std::memory_order_relaxed) / static_cast<double>(s.frames)) / 1000.0;
+	s.worst_present_ms = sess_worst_us_.load(std::memory_order_relaxed) / 1000.0;
+	s.slow_frames = sess_slow_.load(std::memory_order_relaxed);
+	s.fec_failures = fec_failures_.load(std::memory_order_relaxed);
+	s.frames_dropped = frames_dropped_.load(std::memory_order_relaxed);
+	s.audio_underruns = audio_underruns_.load(std::memory_order_relaxed);
+	return s;
 }
 
 void Telemetry::vsync_tick(uint64_t ts_ns)

@@ -54,10 +54,15 @@ void RingLog::drain_loop()
 	// crashes, which makes it the post-mortem channel for SD-card users.
 	mkdir("/config", 0755);
 	mkdir("/config/hayai", 0755);
-	// Keep one generation. Opening "w" alone meant that relaunching after a bad
-	// session destroyed the very log that explained it.
-	rename("/config/hayai/hayai.log", "/config/hayai/hayai.prev.log");
-	FILE *f = fopen("/config/hayai/hayai.log", "w");
+	// Append, never truncate. Rotating on launch still lost sessions, because
+	// opening the app twice pushed the interesting log out through the single
+	// spare generation. Roll over only when the file gets genuinely large.
+	{
+		struct stat st{};
+		if(stat("/config/hayai/hayai.log", &st) == 0 && st.st_size > 2 * 1024 * 1024)
+			rename("/config/hayai/hayai.log", "/config/hayai/hayai.prev.log");
+	}
+	FILE *f = fopen("/config/hayai/hayai.log", "a");
 	file_ = f;
 
 	char line[kSlotSize + 64];

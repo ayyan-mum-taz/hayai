@@ -3,6 +3,7 @@
 
 #include "app/config.hpp"
 #include "app/discovery.hpp"
+#include "core/telemetry.hpp"
 #include "gfx/presenter.hpp"
 
 namespace hayai::ui { class Draw; }
@@ -50,6 +51,7 @@ private:
 	void draw_header(const char *title, const char *subtitle);
 	void draw_hints(const char *hints);
 	void message(const char *title, const char *body);
+	void session_report(const core::Telemetry::Summary &s, bool errored);
 
 	Config &config_;
 	Discovery discovery_;

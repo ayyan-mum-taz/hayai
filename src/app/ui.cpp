@@ -8,6 +8,7 @@
 #include "app/ui.hpp"
 #include "app/stream.hpp"
 #include "core/log.hpp"
+#include "core/telemetry.hpp"
 #include "ui/draw.hpp"
 #include "util/time.hpp"
 
@@ -164,6 +165,73 @@ void Ui::message(const char *title, const char *body)
 		}
 
 		draw_hints("Any button   Continue");
+		frame_end();
+	}
+}
+
+// Shown when a stream ends. Every number here is one the client already
+// measured; the point is that tuning bitrate stops being guesswork.
+void Ui::session_report(const core::Telemetry::Summary &s, bool errored)
+{
+	padUpdate(&g_pad);
+
+	// One honest sentence about what the link did, derived from the same data.
+	const double mins = s.duration_ms / 60000.0;
+	const double fec_per_min = mins > 0.05 ? s.fec_failures / mins : 0.0;
+	const char *verdict;
+	if(s.frames < 60)
+		verdict = "Too short to judge.";
+	else if(fec_per_min >= 6.0)
+		verdict = "Link struggled. Try one step down the bitrate ladder.";
+	else if(fec_per_min >= 1.5)
+		verdict = "Occasional recovery stalls. A small bitrate drop would steady it.";
+	else if(s.avg_fps >= 58.0 && s.fec_failures == 0)
+		verdict = "Clean throughout - there is headroom for more bitrate.";
+	else
+		verdict = "Healthy.";
+
+	while(appletMainLoop())
+	{
+		padUpdate(&g_pad);
+		if(padGetButtonsDown(&g_pad))
+			break;
+
+		frame_begin();
+		draw_header(errored ? "Session ended with an error" : "Session summary", verdict);
+
+		const float x = kMargin;
+		const float w = static_cast<float>(draw_->width()) - kMargin * 2;
+		float y = 150.0f;
+
+		char l[128], r[64];
+		auto row = [&](const char *label, const char *value, Color vc) {
+			draw_->rounded_rect(x, y, w, 52.0f, 12.0f, theme::card);
+			draw_->text(x + 24.0f, y + 14.0f, Font::Body, theme::text_dim, label);
+			const float vw = draw_->text_width(Font::Body, value);
+			draw_->text(x + w - vw - 24.0f, y + 14.0f, Font::Body, vc, value);
+			y += 60.0f;
+		};
+
+		snprintf(l, sizeof(l), "%llu min %llu s",
+			static_cast<unsigned long long>(s.duration_ms / 60000),
+			static_cast<unsigned long long>((s.duration_ms / 1000) % 60));
+		row("Played for", l, theme::text);
+
+		snprintf(l, sizeof(l), "%.1f fps", s.avg_fps);
+		row("Average frame rate", l, s.avg_fps >= 57.0 ? theme::good : theme::warn);
+
+		snprintf(l, sizeof(l), "%.1f ms avg, %.0f ms worst", s.avg_present_ms, s.worst_present_ms);
+		row("Frame to screen", l, s.avg_present_ms < 4.0 ? theme::good : theme::warn);
+
+		snprintf(l, sizeof(l), "%llu stalls", static_cast<unsigned long long>(s.fec_failures));
+		snprintf(r, sizeof(r), "%s", l);
+		row("Network recovery", r,
+			s.fec_failures == 0 ? theme::good : fec_per_min >= 3.0 ? theme::bad : theme::warn);
+
+		snprintf(l, sizeof(l), "%llu gaps", static_cast<unsigned long long>(s.audio_underruns));
+		row("Audio", l, s.audio_underruns < 10 ? theme::good : theme::warn);
+
+		draw_hints("Any button   Back to consoles");
 		frame_end();
 	}
 }
@@ -495,7 +563,10 @@ void Ui::settings_menu()
 	constexpr int kItems = 6;
 	// A short ladder rather than a slider: every value here is one someone
 	// would actually pick, and "auto" follows the profile and resolution.
-	static constexpr uint32_t kBitrates[] = { 0, 4000, 5200, 6300, 8000, 10000, 12000, 15000 };
+	static constexpr uint32_t kBitrates[] = {
+		0, 4000, 4600, 4800, 5000, 5200, 5500, 5800, 6300, 6700, 8000, 10000, 12000, 15000
+	};
+	constexpr int kBitrateCount = static_cast<int>(sizeof(kBitrates) / sizeof(kBitrates[0]));
 	float cursor_anim = -1.0f;
 
 	while(appletMainLoop())
@@ -508,33 +579,34 @@ void Ui::settings_menu()
 			cursor = (cursor + 1) % kItems;
 		if(down & HidNpadButton_AnyUp)
 			cursor = (cursor + kItems - 1) % kItems;
-		if(down & (HidNpadButton_A | HidNpadButton_AnyRight))
+		const bool step_back = (down & HidNpadButton_AnyLeft) != 0;
+		if(down & (HidNpadButton_A | HidNpadButton_AnyRight | HidNpadButton_AnyLeft))
 		{
+			const int dir = step_back ? -1 : 1;
 			switch(cursor)
 			{
 				case 0:
-					s.profile = s.profile == Profile::Latency ? Profile::Smooth
-						: s.profile == Profile::Smooth ? Profile::Quality : Profile::Latency;
+				{
+					const int p = (static_cast<int>(s.profile) + dir + 3) % 3;
+					s.profile = static_cast<Profile>(p);
 					s.apply_profile_defaults();
 					break;
+				}
 				case 1:
-					switch(s.resolution)
-					{
-						case Res::R360: s.resolution = Res::R540; break;
-						case Res::R540: s.resolution = Res::R720; break;
-						case Res::R720: s.resolution = Res::R1080; break;
-						default: s.resolution = Res::R360; break;
-					}
-					s.bitrate = 0;
+				{
+					const int r = (static_cast<int>(s.resolution) + dir + 4) % 4;
+					s.resolution = static_cast<Res>(r);
+					s.bitrate = 0;	// follow the new resolution's default
 					break;
+				}
 				case 2:
 					s.fps = s.fps == CHIAKI_VIDEO_FPS_PRESET_60 ? CHIAKI_VIDEO_FPS_PRESET_30
 						: CHIAKI_VIDEO_FPS_PRESET_60;
 					break;
 				case 3:
 				{
-					size_t bi = 0;
-					for(size_t i = 0; i < sizeof(kBitrates) / sizeof(kBitrates[0]); i++)
+					int bi = 0;
+					for(int i = 0; i < kBitrateCount; i++)
 					{
 						if(kBitrates[i] == s.bitrate)
 						{
@@ -542,7 +614,7 @@ void Ui::settings_menu()
 							break;
 						}
 					}
-					s.bitrate = kBitrates[(bi + 1) % (sizeof(kBitrates) / sizeof(kBitrates[0]))];
+					s.bitrate = kBitrates[(bi + dir + kBitrateCount) % kBitrateCount];
 					break;
 				}
 				case 4:
@@ -618,7 +690,7 @@ void Ui::settings_menu()
 				sel ? theme::accent : theme::text, items[i].value);
 		}
 
-		draw_hints("A / Right  Change      B  Back (saves)");
+		draw_hints("Left / Right  Adjust      B  Back (saves)");
 		frame_end();
 	}
 	config_.save();
@@ -687,9 +759,7 @@ void Ui::run()
 		if(!gfx_up())
 			break;
 
-		if(reason == Stream::EndReason::Error)
-			message("Session ended with an error",
-				"See /config/hayai/hayai.log for the reason.");
+		session_report(core::telemetry().summary(), reason == Stream::EndReason::Error);
 	}
 
 	gfx_down();
